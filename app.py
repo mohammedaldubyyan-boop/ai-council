@@ -10,11 +10,10 @@ from fpdf import FPDF
 
 
 # =========================================================
-# BUILD ID
-# إذا ظهر هذا الرقم في التطبيق نعرف أن Streamlit شغل النسخة الجديدة
+# BUILD
 # =========================================================
 
-BUILD_ID = "2026-09-02-FIX-4"
+BUILD_ID = "GROQ-COUNCIL-1"
 
 
 # =========================================================
@@ -29,7 +28,7 @@ st.set_page_config(
 
 
 # =========================================================
-# تنسيق عربي RTL
+# RTL عربي
 # =========================================================
 
 st.markdown(
@@ -66,21 +65,21 @@ st.markdown(
 
 
 # =========================================================
-# OpenRouter
+# GROQ
 # =========================================================
 
 client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=st.secrets["OPENROUTER_API_KEY"],
+    api_key=st.secrets["GROQ_API_KEY"],
+    base_url="https://api.groq.com/openai/v1",
     timeout=90.0,
     max_retries=0
 )
 
 
 # =========================================================
-# موديلات المجلس
+# المستشارون
 #
-# كل مستشار له موديل أساسي + موديلات احتياطية
+# كل مستشار يبدأ بموديل مختلف فعلياً
 # =========================================================
 
 AGENTS = {
@@ -88,31 +87,38 @@ AGENTS = {
     "🧠 المستشار الاستراتيجي": {
 
         "models": [
-            "inclusionai/ling-3.0-flash-fin:free",
-            "openai/gpt-oss-20b:free",
-            "openrouter/free"
+            {
+                "id": "openai/gpt-oss-120b",
+                "reasoning": "low"
+            },
+            {
+                "id": "openai/gpt-oss-20b",
+                "reasoning": "low"
+            }
         ],
 
         "role": """
 أنت مستشار استراتيجي مستقل ومحترف.
 
-حلل سؤال المستخدم بعمق.
+حلل سؤال المستخدم من منظور استراتيجي.
 
 ركز على:
 - الهدف الحقيقي
 - الخيارات المتاحة
 - المزايا والعيوب
 - المخاطر
-- النتائج قصيرة المدى
-- النتائج طويلة المدى
-- الافتراضات التي يجب اختبارها
-- المعلومات الناقصة
+- العواقب قصيرة المدى
+- العواقب طويلة المدى
+- المعلومات التي تنقصنا
+- أفضل قرار في الوضع الحالي
 
 لا توافق على المستخدم لمجرد إرضائه.
 
 إذا كانت الفكرة ضعيفة قل ذلك بوضوح.
 
-أعط توصية عملية ومبررة.
+قدم توصية عملية ومباشرة.
+
+لا تتجاوز 600 كلمة.
 """
     },
 
@@ -120,30 +126,37 @@ AGENTS = {
     "😈 الناقد": {
 
         "models": [
-            "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-            "openai/gpt-oss-20b:free",
-            "openrouter/free"
+            {
+                "id": "qwen/qwen3.8-27b",
+                "reasoning": "none"
+            },
+            {
+                "id": "openai/gpt-oss-20b",
+                "reasoning": "low"
+            }
         ],
 
         "role": """
-أنت ناقد مستقل وDevil's Advocate.
+أنت Devil's Advocate وناقد مستقل.
 
-مهمتك اختبار الفكرة بقوة.
+اختبر الفكرة بقوة.
 
 ابحث عن:
 - الأخطاء
+- نقاط الضعف
 - المخاطر
 - الافتراضات غير المثبتة
-- المعلومات الناقصة
 - التحيزات
-- أسباب الفشل المحتملة
-- الحالات التي تجعل القرار خاطئاً
+- السيناريوهات التي تؤدي للفشل
+- الأشياء التي قد يكون المستخدم يتجاهلها
 
 لا تعارض لمجرد المعارضة.
 
 كل اعتراض يجب أن يكون له سبب منطقي.
 
 في النهاية وضح كيف يمكن تحسين الفكرة.
+
+لا تتجاوز 600 كلمة.
 """
     },
 
@@ -151,40 +164,59 @@ AGENTS = {
     "💡 المستشار المبتكر": {
 
         "models": [
-            "openai/gpt-oss-20b:free",
-            "inclusionai/ling-3.0-flash-fin:free",
-            "openrouter/free"
+            {
+                "id": "qwen/qwen3.6-27b",
+                "reasoning": "none"
+            },
+            {
+                "id": "openai/gpt-oss-20b",
+                "reasoning": "low"
+            }
         ],
 
         "role": """
-أنت مستشار ابتكار وحلول.
+أنت مستشار ابتكار وحلول عملية.
 
 ابحث عن:
-- حلول لم يفكر بها المستخدم
-- بدائل أفضل
+- حلول مختلفة
+- بدائل لم يفكر بها المستخدم
 - طرق أبسط
 - طرق أقل تكلفة
 - فرص مخفية
-- طرق اختبار الفكرة قبل الالتزام بها
+- طرق اختبار الفكرة قبل المخاطرة
 - سيناريوهات بديلة
 
-كن عملياً وواقعياً.
+كن واقعياً وعملياً.
 
 لا تقدم أفكاراً خيالية غير قابلة للتنفيذ.
+
+لا تتجاوز 600 كلمة.
 """
     }
 }
 
 
+# =========================================================
+# رئيس المجلس
+# موديل رابع مختلف
+# =========================================================
+
 JUDGE_MODELS = [
-    "inclusionai/ling-3.0-flash-fin:free",
-    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-    "openrouter/free"
+
+    {
+        "id": "openai/gpt-oss-20b",
+        "reasoning": "low"
+    },
+
+    {
+        "id": "qwen/qwen3.8-27b",
+        "reasoning": "none"
+    }
 ]
 
 
 # =========================================================
-# قراءة المحتوى مهما كان شكل الرد
+# استخراج الرد
 # =========================================================
 
 def extract_content(content):
@@ -195,7 +227,6 @@ def extract_content(content):
     if isinstance(content, str):
         return content.strip()
 
-    # بعض الـ APIs قد تعيد أجزاء متعددة
     if isinstance(content, list):
 
         pieces = []
@@ -203,6 +234,7 @@ def extract_content(content):
         for part in content:
 
             if isinstance(part, str):
+
                 pieces.append(part)
 
             elif isinstance(part, dict):
@@ -214,7 +246,11 @@ def extract_content(content):
 
             else:
 
-                text = getattr(part, "text", None)
+                text = getattr(
+                    part,
+                    "text",
+                    None
+                )
 
                 if text:
                     pieces.append(str(text))
@@ -225,24 +261,53 @@ def extract_content(content):
 
 
 # =========================================================
-# استدعاء موديل واحد
+# اختصار النصوص الطويلة قبل إرسالها للجولة التالية
+# =========================================================
+
+def truncate_text(
+    text,
+    max_chars=6500
+):
+
+    if not text:
+        return ""
+
+    if len(text) <= max_chars:
+        return text
+
+    return (
+        text[:max_chars]
+        + "\n\n[تم اختصار بقية الرد لتوفير السياق]"
+    )
+
+
+# =========================================================
+# استدعاء موديل Groq
 # =========================================================
 
 def call_one_model(
-    model,
+    model_config,
     system_prompt,
-    user_prompt
+    user_prompt,
+    max_tokens=1200
 ):
+
+    model = model_config["id"]
+
+    reasoning = model_config.get(
+        "reasoning"
+    )
 
     errors = []
 
 
-    # نحاول مرتين قبل الانتقال للموديل التالي
+    # محاولتان فقط
     for attempt in range(2):
 
         try:
 
             kwargs = {
+
                 "model": model,
 
                 "messages": [
@@ -256,32 +321,31 @@ def call_one_model(
                     }
                 ],
 
-                # نترك مساحة كافية للجواب النهائي
-                "max_tokens": 3200
+                "temperature": 0.4,
+
+                "max_completion_tokens": max_tokens
             }
 
 
-            # الموديلات التي تستخدم reasoning
-            # نخليه minimal حتى لا يأكل كل الـ output tokens
-            if model != "openrouter/free":
+            # Groq يدعم reasoning_effort
+            # لهذه الموديلات
+            if reasoning:
 
-                kwargs["extra_body"] = {
-                    "reasoning": {
-                        "effort": "minimal",
-                        "exclude": True
-                    }
-                }
+                kwargs["reasoning_effort"] = reasoning
 
 
-            response = client.chat.completions.create(
-                **kwargs
+            response = (
+                client
+                .chat
+                .completions
+                .create(**kwargs)
             )
 
 
             if not response.choices:
 
                 errors.append(
-                    f"{model}: no choices returned"
+                    f"{model}: لم يرجع choices"
                 )
 
                 continue
@@ -297,34 +361,6 @@ def call_one_model(
             )
 
 
-            # نجاح حقيقي
-            if content:
-
-                actual_model = getattr(
-                    response,
-                    "model",
-                    model
-                )
-
-                return {
-                    "ok": True,
-                    "text": content,
-                    "model": actual_model,
-                    "requested_model": model,
-                    "error": None
-                }
-
-
-            # إذا OpenRouter نجح لكن لم يرجع جواب نهائي
-            reasoning_exists = bool(
-                getattr(
-                    message,
-                    "reasoning",
-                    None
-                )
-            )
-
-
             finish_reason = getattr(
                 choice,
                 "finish_reason",
@@ -332,10 +368,20 @@ def call_one_model(
             )
 
 
+            if content:
+
+                return {
+                    "ok": True,
+                    "text": content,
+                    "model": model,
+                    "finish_reason": finish_reason,
+                    "error": None
+                }
+
+
             errors.append(
-                f"{model}: empty final content | "
-                f"finish_reason={finish_reason} | "
-                f"reasoning_present={reasoning_exists}"
+                f"{model}: رد فارغ | "
+                f"finish_reason={finish_reason}"
             )
 
 
@@ -348,74 +394,75 @@ def call_one_model(
             )
 
 
-            # إذا rate limit ننتظر ثم نجرب مرة ثانية
+            # Rate limit
             if (
                 "429" in error_text
                 or "rate limit" in error_text.lower()
             ):
 
-                time.sleep(3)
+                time.sleep(5)
 
             else:
 
-                # خطأ آخر: المحاولة الثانية بعد تأخير خفيف
                 time.sleep(1)
 
 
     return {
         "ok": False,
         "text": "",
-        "model": None,
-        "requested_model": model,
+        "model": model,
+        "finish_reason": None,
         "error": " || ".join(errors)
     }
 
 
 # =========================================================
-# جرب عدة موديلات
+# Fallback بين الموديلات
 # =========================================================
 
 def ask_models(
     models,
     system_prompt,
-    user_prompt
+    user_prompt,
+    max_tokens=1200
 ):
 
     all_errors = []
 
 
-    for model in models:
+    for model_config in models:
 
         result = call_one_model(
-            model,
+
+            model_config,
+
             system_prompt,
-            user_prompt
+
+            user_prompt,
+
+            max_tokens=max_tokens
         )
 
 
         if result["ok"]:
+
             return result
 
 
-        if result.get("error"):
-            all_errors.append(
-                result["error"]
+        all_errors.append(
+            result.get(
+                "error",
+                "Unknown error"
             )
-
-
-    combined_error = "\n\n".join(
-        all_errors
-    )
+        )
 
 
     return {
         "ok": False,
-        "text": (
-            "تعذر الحصول على رد من هذا المستشار حالياً."
-        ),
+        "text": "",
         "model": None,
-        "requested_model": None,
-        "error": combined_error
+        "finish_reason": None,
+        "error": "\n\n".join(all_errors)
     }
 
 
@@ -430,6 +477,7 @@ def valid_results(results):
 
 
     return [
+
         result
 
         for result
@@ -454,15 +502,27 @@ def first_round(question):
     ):
 
         result = ask_models(
+
             config["models"],
+
             config["role"],
-            question
+
+            f"""
+السؤال:
+
+{question}
+
+قدم تحليلك المستقل الآن.
+""",
+
+            max_tokens=1100
         )
+
 
         return name, result
 
 
-    # الثلاثة يشتغلون بالتوازي
+    # المستشارون الثلاثة يعملون بنفس الوقت
     with ThreadPoolExecutor(
         max_workers=3
     ) as executor:
@@ -495,33 +555,36 @@ def first_round(question):
 
                 results[agent_name] = result
 
+
             except Exception as e:
 
                 results[name] = {
+
                     "ok": False,
-                    "text": (
-                        "حدث خطأ أثناء تشغيل المستشار."
-                    ),
+
+                    "text": "",
+
                     "model": None,
-                    "requested_model": None,
+
                     "error": str(e)
                 }
 
 
-    # نحافظ على ترتيب المستشارين
+    # المحافظة على الترتيب
     ordered = {}
 
 
     for name in AGENTS:
 
         ordered[name] = results.get(
+
             name,
+
             {
                 "ok": False,
-                "text": "لم يصل رد.",
+                "text": "",
                 "model": None,
-                "requested_model": None,
-                "error": "No result returned"
+                "error": "لم يصل رد."
             }
         )
 
@@ -530,7 +593,8 @@ def first_round(question):
 
 
 # =========================================================
-# الجولة الثانية - النقاش
+# الجولة الثانية
+# كل واحد يقرأ الآخرين ويرد عليهم
 # =========================================================
 
 def debate_round(
@@ -560,7 +624,10 @@ def debate_round(
         others = ""
 
 
-        for other_name, result in successful_answers.items():
+        for (
+            other_name,
+            result
+        ) in successful_answers.items():
 
             if other_name == name:
                 continue
@@ -572,7 +639,7 @@ def debate_round(
 
 رأي {other_name}:
 
-{result["text"]}
+{truncate_text(result["text"], 5000)}
 
 """
 
@@ -585,12 +652,15 @@ def debate_round(
 
         if previous.get("ok"):
 
-            previous_text = previous["text"]
+            previous_text = truncate_text(
+                previous["text"],
+                5000
+            )
 
         else:
 
             previous_text = (
-                "لم يصل منك رأي في الجولة الأولى."
+                "لم يصل رأي منك في الجولة الأولى."
             )
 
 
@@ -600,51 +670,56 @@ def debate_round(
 {question}
 
 
-رأيك في الجولة الأولى:
+رأيك الأول:
 
 {previous_text}
 
 
-آراء المستشارين الآخرين:
+آراء بقية المستشارين:
 
 {others}
 
 
-أنت الآن في اجتماع حقيقي بين المستشارين.
+أنت الآن في الجولة الثانية من الاجتماع.
 
-لا تعيد إجابتك السابقة فقط.
+لا تكرر كلامك فقط.
 
-اقرأ حجج الآخرين ورد عليها بشكل مباشر.
+رد على حجج الآخرين مباشرة.
 
-أجب عن:
+أجب باختصار:
 
-1. ما النقاط التي تتفق معهم فيها؟
+1. أين تتفق معهم؟
 
-2. ما النقاط التي تختلف معهم فيها؟
+2. أين تختلف معهم؟
 
-3. ما الأخطاء أو الافتراضات الضعيفة في كلامهم؟
+3. ما أقوى حجة طرحها أحدهم؟
 
-4. أي مستشار قدم أقوى حجة؟ ولماذا؟
+4. ما أضعف افتراض في النقاش؟
 
-5. هل غيرت موقفك بعد قراءة آرائهم؟
+5. هل غيرت رأيك؟
 
 6. ما توصيتك المحدثة؟
 
-إذا كانت حجة أحد المستشارين خاطئة،
-اذكر الحجة واشرح سبب الخطأ.
+لا تتجاوز 500 كلمة.
 """
 
 
         result = ask_models(
+
             config["models"],
+
             config["role"],
-            prompt
+
+            prompt,
+
+            max_tokens=1000
         )
 
 
         return name, result
 
 
+    # الجولة الثانية أيضاً بالتوازي
     with ThreadPoolExecutor(
         max_workers=3
     ) as executor:
@@ -677,15 +752,17 @@ def debate_round(
 
                 results[agent_name] = result
 
+
             except Exception as e:
 
                 results[name] = {
+
                     "ok": False,
-                    "text": (
-                        "حدث خطأ أثناء جولة النقاش."
-                    ),
+
+                    "text": "",
+
                     "model": None,
-                    "requested_model": None,
+
                     "error": str(e)
                 }
 
@@ -696,13 +773,14 @@ def debate_round(
     for name in AGENTS:
 
         ordered[name] = results.get(
+
             name,
+
             {
                 "ok": False,
-                "text": "لم يصل رد.",
+                "text": "",
                 "model": None,
-                "requested_model": None,
-                "error": "No result returned"
+                "error": "لم يصل رد."
             }
         )
 
@@ -737,15 +815,27 @@ def final_judge(
 
 
         first_text = (
-            first.get("text")
+
+            truncate_text(
+                first.get("text", ""),
+                4500
+            )
+
             if first.get("ok")
+
             else "لم يتوفر رأي أولي."
         )
 
 
         second_text = (
-            second.get("text")
+
+            truncate_text(
+                second.get("text", ""),
+                4500
+            )
+
             if second.get("ok")
+
             else "لم يتوفر رد في جولة النقاش."
         )
 
@@ -769,108 +859,93 @@ def final_judge(
 
 
     prompt = f"""
-أنت رئيس مجلس استشاري مستقل ومحايد.
-
-السؤال الأصلي:
+السؤال:
 
 {question}
 
 
-هذا محضر الاجتماع الكامل:
+محضر مجلس المستشارين:
 
 {meeting}
 
 
-مهمتك ليست تلخيص الكلام فقط.
+أنت رئيس المجلس.
 
-يجب أن تحكم بين الحجج.
+لا تلخص كلامهم فقط.
 
-لا تنحز لأي مستشار بسبب اسمه أو الموديل المستخدم.
+احكم بين الحجج.
 
-لا تخترع أرقاماً أو حقائق.
+لا تنحز للأغلبية تلقائياً.
 
-إذا كانت المعلومات غير كافية،
-قل بوضوح ما المعلومات التي نحتاجها.
+إذا كان رأي مستشار واحد أقوى من الآخرين،
+اختر حجته.
+
+لا تخترع معلومات.
 
 
-أصدر التقرير بهذا الترتيب:
+أصدر تقريراً بهذا الترتيب:
 
 
 # الخلاصة التنفيذية
 
-اختصر الوضع والقرار.
-
 
 # نقاط الاتفاق
-
-اذكر الأشياء التي اتفق عليها المستشارون.
 
 
 # نقاط الخلاف
 
-اذكر أهم الخلافات.
-
 
 # أقوى الحجج
-
-أي الحجج كانت أقوى ولماذا؟
 
 
 # الافتراضات غير المثبتة
 
-ما الأشياء التي نفترضها بدون دليل؟
-
 
 # أهم المخاطر
 
-رتب أهم المخاطر.
 
-
-# البدائل المتاحة
-
-اذكر الخيارات الواقعية.
+# أفضل خيار
 
 
 # توصية المجلس النهائية
 
-اختر أفضل قرار حالياً وفسر السبب.
-
 
 # ماذا أفعل الآن؟
 
-قدم خطوات عملية واضحة ومرتبة.
+قدم خطوات عملية مرتبة.
 
 
 # درجة الثقة
 
-ضع درجة من 0 إلى 100.
+درجة من 0 إلى 100 مع تفسير مختصر.
 
-فسر سبب الدرجة.
+
+لا تتجاوز 900 كلمة.
 """
 
 
     return ask_models(
+
         JUDGE_MODELS,
 
         """
-أنت رئيس مجلس استشاري محايد.
+أنت رئيس مجلس استشاري مستقل ومحايد.
 
-احكم على قوة الحجج والمنطق.
+مهمتك تقييم حجج ثلاثة مستشارين
+والوصول إلى أفضل قرار.
 
-لا توافق على الأغلبية تلقائياً.
-
-إذا كان رأي الأقلية أقوى،
-اختره.
-
-لا تخترع معلومات غير موجودة.
+احكم على جودة المنطق،
+وليس اسم المستشار أو اسم الموديل.
 """,
 
-        prompt
+        prompt,
+
+        max_tokens=1500
     )
 
 
 # =========================================================
-# بناء التقرير الكامل
+# التقرير الكامل
 # =========================================================
 
 def build_report(
@@ -895,7 +970,7 @@ MD AI COUNCIL
 
 القرار النهائي
 
-{final.get("text", "لم يتوفر قرار نهائي.")}
+{final.get("text", "لم يتوفر تقرير.")}
 
 
 ========================================
@@ -911,6 +986,7 @@ MD AI COUNCIL
 {name}
 
 """
+
 
         if result.get("ok"):
 
@@ -945,6 +1021,7 @@ MD AI COUNCIL
 
 """
 
+
         if result.get("ok"):
 
             report += result["text"]
@@ -966,7 +1043,7 @@ MD AI COUNCIL
 
 
 # =========================================================
-# تنظيف النص للـ PDF
+# تنظيف PDF
 # =========================================================
 
 def clean_pdf_text(text):
@@ -994,6 +1071,7 @@ def clean_pdf_text(text):
 
 
     emojis = [
+
         "🧠",
         "😈",
         "💡",
@@ -1025,7 +1103,7 @@ def clean_pdf_text(text):
 
 
 # =========================================================
-# البحث عن خط عربي
+# إيجاد خط عربي
 # =========================================================
 
 def find_arabic_font():
@@ -1057,6 +1135,7 @@ def find_arabic_font():
 
         lower = font.lower()
 
+
         if (
             "naskh" in lower
             or "arabic" in lower
@@ -1070,7 +1149,7 @@ def find_arabic_font():
 
 
 # =========================================================
-# إنشاء PDF عربي
+# PDF عربي
 # =========================================================
 
 def create_pdf(
@@ -1083,7 +1162,7 @@ def create_pdf(
     if not font_path:
 
         raise RuntimeError(
-            "لم يتم العثور على خط عربي على الخادم."
+            "لم أجد خطاً عربياً على الخادم."
         )
 
 
@@ -1128,22 +1207,17 @@ def create_pdf(
     )
 
 
-    # دعم RTL والعربية
-    try:
-
-        pdf.set_text_shaping(
-            use_shaping_engine=True,
-            direction="rtl",
-            script="arab",
-            language="ara"
-        )
-
-    except Exception:
-        pass
+    # تشكيل العربية و RTL
+    pdf.set_text_shaping(
+        use_shaping_engine=True,
+        direction="rtl",
+        script="arab",
+        language="ara"
+    )
 
 
     pdf.set_title(
-        "MD AI Council Report"
+        "MD AI Council"
     )
 
 
@@ -1160,11 +1234,17 @@ def create_pdf(
 
 
         headings = [
+
             "MD AI COUNCIL",
+
             "المجلس الاستشاري للذكاء الاصطناعي",
+
             "السؤال",
+
             "القرار النهائي",
+
             "الآراء الأولية",
+
             "جولة النقاش"
         ]
 
@@ -1189,11 +1269,17 @@ def create_pdf(
 
 
         pdf.multi_cell(
+
             w=0,
+
             h=height,
+
             text=paragraph,
+
             align="R",
+
             new_x="LMARGIN",
+
             new_y="NEXT"
         )
 
@@ -1204,7 +1290,7 @@ def create_pdf(
 
 
 # =========================================================
-# Session State
+# SESSION STATE
 # =========================================================
 
 DEFAULT_STATE = {
@@ -1229,7 +1315,7 @@ for key, value in DEFAULT_STATE.items():
 
 
 # =========================================================
-# واجهة التطبيق
+# الواجهة
 # =========================================================
 
 st.title(
@@ -1244,16 +1330,19 @@ st.caption(
 
 st.write(
     """
-اكتب الموضوع الذي تريد مناقشته.
+ثلاثة نماذج ذكاء اصطناعي مختلفة
+تحلل سؤالك بشكل مستقل.
 
-سيقوم ثلاثة مستشارين مختلفين بتحليله بشكل مستقل،
-ثم يقرأ كل مستشار آراء الآخرين ويرد عليها،
-ثم يصدر رئيس المجلس التقرير النهائي.
+بعدها يقرأ كل مستشار آراء الآخرين
+ويرد عليها.
+
+ثم يصدر رئيس المجلس القرار النهائي.
 """
 )
 
 
 question = st.text_area(
+
     "وش تبي المجلس يناقش؟",
 
     height=180,
@@ -1269,14 +1358,17 @@ question = st.text_area(
 
 
 start = st.button(
+
     "🚀 ابدأ الاجتماع",
+
     type="primary",
+
     use_container_width=True
 )
 
 
 # =========================================================
-# تشغيل الاجتماع
+# تشغيل المجلس
 # =========================================================
 
 if start:
@@ -1287,25 +1379,32 @@ if start:
             "اكتب الموضوع أولاً."
         )
 
+
     else:
 
-        # مسح الاجتماع السابق
-        st.session_state.question_saved = question
+        st.session_state.question_saved = (
+            question
+        )
+
         st.session_state.round1 = None
+
         st.session_state.round2 = None
+
         st.session_state.final = None
+
         st.session_state.meeting_error = None
 
 
         progress = st.empty()
 
 
-        # -----------------------------------------
+        # =================================================
         # الجولة الأولى
-        # -----------------------------------------
+        # =================================================
 
         progress.info(
-            "🧠 الجولة الأولى: المستشارون يفكرون..."
+            "🧠 الجولة الأولى: "
+            "3 مستشارين يفكرون بنفس الوقت..."
         )
 
 
@@ -1314,20 +1413,18 @@ if start:
         )
 
 
-        st.session_state.round1 = round1
-
-
-        successful_round1 = valid_results(
+        st.session_state.round1 = (
             round1
         )
 
 
-        if len(successful_round1) < 2:
+        if len(
+            valid_results(round1)
+        ) < 2:
 
             st.session_state.meeting_error = (
                 "لم ينجح عدد كافٍ من المستشارين "
-                "في الجولة الأولى. "
-                "افتح التفاصيل التقنية أدناه لمعرفة السبب."
+                "في الجولة الأولى."
             )
 
 
@@ -1338,36 +1435,36 @@ if start:
 
         else:
 
-            # -----------------------------------------
-            # الجولة الثانية
-            # -----------------------------------------
+            # =============================================
+            # النقاش
+            # =============================================
 
             progress.info(
-                "⚔️ الجولة الثانية: "
-                "المستشارون يقرأون آراء بعضهم..."
+                "⚔️ المستشارون الآن "
+                "يقرؤون آراء بعضهم..."
             )
 
 
             round2 = debate_round(
+
                 question,
+
                 round1
             )
 
 
-            st.session_state.round2 = round2
-
-
-            successful_round2 = valid_results(
+            st.session_state.round2 = (
                 round2
             )
 
 
-            if len(successful_round2) < 2:
+            if len(
+                valid_results(round2)
+            ) < 2:
 
                 st.session_state.meeting_error = (
-                    "لم ينجح عدد كافٍ من المستشارين "
-                    "في جولة النقاش. "
-                    "لن نصدر تقريراً ناقصاً."
+                    "لم ينجح عدد كافٍ "
+                    "في جولة النقاش."
                 )
 
 
@@ -1378,25 +1475,31 @@ if start:
 
             else:
 
-                # -----------------------------------------
-                # رئيس المجلس
-                # -----------------------------------------
+                # =========================================
+                # الحكم
+                # =========================================
 
                 progress.info(
-                    "🏛️ رئيس المجلس يراجع النقاش..."
+                    "🏛️ رئيس المجلس "
+                    "يراجع الاجتماع..."
                 )
 
 
                 final = final_judge(
+
                     question,
+
                     round1,
+
                     round2
                 )
 
 
                 if final.get("ok"):
 
-                    st.session_state.final = final
+                    st.session_state.final = (
+                        final
+                    )
 
 
                     progress.success(
@@ -1407,19 +1510,18 @@ if start:
                 else:
 
                     st.session_state.meeting_error = (
-                        "نجح اجتماع المستشارين، "
-                        "لكن رئيس المجلس لم يتمكن "
-                        "من إصدار التقرير."
+                        "نجح النقاش لكن رئيس المجلس "
+                        "لم يستطع إصدار التقرير."
                     )
 
 
                     progress.error(
-                        "❌ تعذر إصدار التقرير النهائي."
+                        "❌ تعذر إصدار التقرير."
                     )
 
 
 # =========================================================
-# الخطأ العام
+# الخطأ
 # =========================================================
 
 if st.session_state.meeting_error:
@@ -1471,61 +1573,7 @@ if st.session_state.round1:
 
 
                 st.caption(
-                    f'النموذج: {result["model"]}'
-                )
-
-
-            else:
-
-                st.warning(
-                    "تعذر الحصول على رد "
-                    "من هذا المستشار."
-                )
-
-
-                with st.expander(
-                    "🔧 التفاصيل التقنية"
-                ):
-
-                    st.code(
-                        result.get(
-                            "error",
-                            "Unknown error"
-                        )
-                    )
-
-
-# =========================================================
-# عرض الجولة الثانية
-# =========================================================
-
-if st.session_state.round2:
-
-    st.divider()
-
-
-    st.header(
-        "2️⃣ ⚔️ النقاش"
-    )
-
-
-    for name, result in st.session_state.round2.items():
-
-        with st.expander(
-            f"{name} يرد على المجلس",
-            expanded=False
-        ):
-
-
-            if result.get("ok"):
-
-                st.markdown(
-                    result["text"]
-                )
-
-
-                st.caption(
-                    f'النموذج: {result["model"]}'
+                    f'الموديل: {result["model"]}'
                 )
 
 
@@ -1549,7 +1597,60 @@ if st.session_state.round2:
 
 
 # =========================================================
-# القرار النهائي
+# عرض النقاش
+# =========================================================
+
+if st.session_state.round2:
+
+    st.divider()
+
+
+    st.header(
+        "2️⃣ ⚔️ النقاش"
+    )
+
+
+    for (
+        name,
+        result
+    ) in st.session_state.round2.items():
+
+
+        with st.expander(
+            f"{name} يرد على المجلس",
+            expanded=False
+        ):
+
+
+            if result.get("ok"):
+
+                st.markdown(
+                    result["text"]
+                )
+
+
+                st.caption(
+                    f'الموديل: {result["model"]}'
+                )
+
+
+            else:
+
+                st.warning(
+                    "تعذر الحصول على الرد."
+                )
+
+
+                st.code(
+                    result.get(
+                        "error",
+                        "Unknown error"
+                    )
+                )
+
+
+# =========================================================
+# التقرير النهائي
 # =========================================================
 
 if st.session_state.final:
@@ -1568,7 +1669,7 @@ if st.session_state.final:
 
 
     st.caption(
-        "رئيس المجلس استخدم: "
+        "رئيس المجلس: "
         f'{st.session_state.final["model"]}'
     )
 
@@ -1593,9 +1694,9 @@ if st.session_state.final:
     )
 
 
-    # -----------------------------------------
+    # =====================================================
     # TXT
-    # -----------------------------------------
+    # =====================================================
 
     st.download_button(
 
@@ -1615,9 +1716,9 @@ if st.session_state.final:
     )
 
 
-    # -----------------------------------------
+    # =====================================================
     # PDF
-    # -----------------------------------------
+    # =====================================================
 
     try:
 
@@ -1645,7 +1746,7 @@ if st.session_state.final:
     except Exception as e:
 
         st.warning(
-            "تعذر إنشاء PDF حالياً."
+            "تعذر تجهيز PDF."
         )
 
 
@@ -1659,7 +1760,7 @@ if st.session_state.final:
 
 
 # =========================================================
-# زر إعادة البداية
+# مسح النتائج
 # =========================================================
 
 if (
@@ -1674,7 +1775,10 @@ if (
         "🗑️ مسح النتيجة وبدء اجتماع جديد"
     ):
 
-        for key, value in DEFAULT_STATE.items():
+        for (
+            key,
+            value
+        ) in DEFAULT_STATE.items():
 
             st.session_state[key] = value
 
