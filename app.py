@@ -17,7 +17,7 @@ from fpdf import FPDF
 # BUILD
 # =========================================================
 
-BUILD_ID = "V7-PER-IDEA-REDTEAM"
+BUILD_ID = "V8-EVIDENCE-FIRST-RESEARCH"
 
 
 # =========================================================
@@ -25,29 +25,29 @@ BUILD_ID = "V7-PER-IDEA-REDTEAM"
 # =========================================================
 
 st.set_page_config(
-    page_title="MD Investment Council",
+    page_title="MD Investment Research Council",
     page_icon="🧠",
     layout="wide",
 )
 
 st.markdown(
     """
-<style>
-.stApp{direction:rtl}
-h1,h2,h3,h4,h5,p{text-align:right}
-div[data-testid="stMarkdownContainer"]{direction:rtl;text-align:right}
-textarea,div[data-baseweb="textarea"] textarea{
-    direction:rtl!important;
-    text-align:right!important
-}
-</style>
-""",
+    <style>
+    .stApp { direction: rtl; }
+    h1,h2,h3,h4,h5,p { text-align:right; }
+    div[data-testid="stMarkdownContainer"] { direction:rtl; text-align:right; }
+    textarea, div[data-baseweb="textarea"] textarea {
+        direction:rtl !important;
+        text-align:right !important;
+    }
+    </style>
+    """,
     unsafe_allow_html=True,
 )
 
 
 # =========================================================
-# GROQ
+# CLIENT / MODELS
 # =========================================================
 
 client = Groq(
@@ -61,11 +61,10 @@ OPERATOR_MODEL = "openai/gpt-oss-20b"
 
 MODEL_LAST_USED = {}
 
-# الطلبات في V7 أصغر من V6، لكن نبقي فجوة لحماية Free Tier.
 MIN_MODEL_GAP = {
-    HUNTER_MODEL: 24,
-    KILLER_MODEL: 24,
-    OPERATOR_MODEL: 24,
+    HUNTER_MODEL: 25,
+    KILLER_MODEL: 25,
+    OPERATOR_MODEL: 25,
 }
 
 
@@ -153,9 +152,8 @@ REJECTED_CONCEPTS = {
 
 
 # =========================================================
-# BASIC HELPERS
+# GENERIC HELPERS
 # =========================================================
-
 
 def norm(text):
     text = (text or "").lower()
@@ -196,33 +194,27 @@ def wait_model(model, stage, status):
         time.sleep(seconds)
 
 
-def prepare_case_brief(text):
-    text = text.strip()
+def obj(props):
+    return {
+        "type": "object",
+        "properties": props,
+        "required": list(props.keys()),
+        "additionalProperties": False,
+    }
 
-    markers = [
-        "\n# الوكلاء",
-        "\n## الوكيل الأول",
-        "\n# قواعد المناظرة",
-        "\n# نظام التقييم",
-        "\n# شرط النجاح",
-        "\n# اختبار الحقيقة",
-        "\n# المرحلة النهائية",
-    ]
 
-    cuts = [text.find(marker) for marker in markers if text.find(marker) != -1]
-    if cuts:
-        text = text[: min(cuts)]
-
-    if len(text) > 13000:
-        text = text[:10000] + "\n[...اختصار محلي...]\n" + text[-2500:]
-
-    return text
+def arr(items, min_items=None, max_items=None):
+    result = {"type": "array", "items": items}
+    if min_items is not None:
+        result["minItems"] = min_items
+    if max_items is not None:
+        result["maxItems"] = max_items
+    return result
 
 
 # =========================================================
 # GROQ CALLS
 # =========================================================
-
 
 def call_json(
     model,
@@ -235,13 +227,11 @@ def call_json(
     status,
     reasoning="none",
     retries=4,
-    validator=None,
 ):
+    wait_model(model, stage, status)
     errors = []
 
-    for attempt in range(retries):
-        wait_model(model, stage, status)
-
+    for _ in range(retries):
         try:
             kwargs = {
                 "model": model,
@@ -269,25 +259,10 @@ def call_json(
             MODEL_LAST_USED[model] = time.time()
 
             content = response.choices[0].message.content
-            if not content:
-                errors.append(f"{model}: empty JSON response")
-                continue
+            if content:
+                return {"ok": True, "data": json.loads(content), "error": None}
 
-            data = json.loads(content)
-
-            if validator is not None:
-                valid, why = validator(data)
-                if not valid:
-                    errors.append(f"Validation failed: {why}")
-                    prompt = (
-                        prompt
-                        + "\n\nIMPORTANT CORRECTION: Your previous output failed validation: "
-                        + why
-                        + "\nReturn a complete corrected object only."
-                    )
-                    continue
-
-            return {"ok": True, "data": data, "error": None}
+            errors.append(f"{model}: empty JSON response")
 
         except Exception as e:
             msg = str(e)
@@ -317,11 +292,10 @@ def call_text(
     reasoning="none",
     retries=4,
 ):
+    wait_model(model, stage, status)
     errors = []
 
     for _ in range(retries):
-        wait_model(model, stage, status)
-
         try:
             kwargs = {
                 "model": model,
@@ -362,9 +336,35 @@ def call_text(
 
 
 # =========================================================
-# BLACKLIST
+# INPUT PREPARATION
 # =========================================================
 
+def prepare_case_brief(text):
+    text = text.strip()
+
+    markers = [
+        "\n# الوكلاء",
+        "\n## الوكيل الأول",
+        "\n# قواعد المناظرة",
+        "\n# نظام التقييم",
+        "\n# شرط النجاح",
+        "\n# اختبار الحقيقة",
+        "\n# المرحلة النهائية",
+    ]
+
+    cuts = [text.find(m) for m in markers if text.find(m) != -1]
+    if cuts:
+        text = text[: min(cuts)]
+
+    if len(text) > 13000:
+        text = text[:10000] + "\n[...اختصار محلي...]\n" + text[-2500:]
+
+    return text
+
+
+# =========================================================
+# BLACKLIST
+# =========================================================
 
 def blacklist_check(idea):
     combined = norm(
@@ -374,6 +374,7 @@ def blacklist_check(idea):
                 idea.get("one_liner", ""),
                 idea.get("product", ""),
                 idea.get("problem", ""),
+                idea.get("job_to_be_done", ""),
             ]
         )
     )
@@ -389,16 +390,15 @@ def blacklist_check(idea):
             return True, f"تشابه مع فكرة مرفوضة: {rejected}"
 
     for concept, phrases in REJECTED_CONCEPTS.items():
-        hits = [phrase for phrase in phrases if norm(phrase) and norm(phrase) in combined]
+        hits = [p for p in phrases if norm(p) and norm(p) in combined]
         if hits:
-            return True, f"تشابه مفاهيمي مع ({concept}): " + ", ".join(hits)
+            return True, f"تشابه مفاهيمي مع ({concept}): {', '.join(hits)}"
 
     return False, ""
 
 
 def filter_ideas(data):
-    passed = []
-    blocked = []
+    passed, blocked = [], []
 
     for idea in data["ideas"]:
         local_block, reason = blacklist_check(idea)
@@ -421,27 +421,8 @@ def filter_ideas(data):
 
 
 # =========================================================
-# SCHEMA HELPERS
+# HUNTER SCHEMA
 # =========================================================
-
-
-def obj(props):
-    return {
-        "type": "object",
-        "properties": props,
-        "required": list(props.keys()),
-        "additionalProperties": False,
-    }
-
-
-def arr(items, min_items=None, max_items=None):
-    result = {"type": "array", "items": items}
-    if min_items is not None:
-        result["minItems"] = min_items
-    if max_items is not None:
-        result["maxItems"] = max_items
-    return result
-
 
 idea_schema = obj(
     {
@@ -459,6 +440,17 @@ idea_schema = obj(
         "automation": {"type": "integer", "minimum": 0, "maximum": 100},
         "human_work": {"type": "string"},
         "why_now": {"type": "string"},
+        "job_to_be_done": {"type": "string"},
+        "direct_competitor_definition": {"type": "string"},
+        "not_a_direct_competitor": {"type": "string"},
+        "search_term_1": {"type": "string"},
+        "search_term_2": {"type": "string"},
+        "search_term_3": {"type": "string"},
+        "pricing_search_term": {"type": "string"},
+        "wtp_search_term": {"type": "string"},
+        "distribution_search_term": {"type": "string"},
+        "regulatory_sensitive": {"type": "boolean"},
+        "regulatory_search_term": {"type": "string"},
         "similar_to_rejected": {"type": "boolean"},
         "rejected_similarity_explanation": {"type": "string"},
     }
@@ -466,29 +458,705 @@ idea_schema = obj(
 
 HUNTER_SCHEMA = obj({"ideas": arr(idea_schema, 3, 3)})
 
-killer_one_schema = obj(
+
+def run_hunter(case_brief, status):
+    system = """
+أنت THE HUNTER.
+
+ابحث عن أماكن تتحرك فيها الأموال فعلياً.
+الأولوية:
+- ألم مالي حقيقي
+- willingness-to-pay
+- distribution
+- automation
+- repeat usage
+- speed to revenue
+
+ممنوع:
+- AI wrapper بلا قيمة مستقلة
+- Dashboard عام
+- أداة يستطيع ChatGPT تنفيذها بما يكفي
+- إعادة تغليف فكرة رفضها المستخدم
+
+أخرج 3 أفكار فقط مختلفة اقتصادياً.
+
+لكل فكرة يجب أن تحدد Job-to-be-Done بدقة.
+ويجب أن تشرح ما الذي يُعتبر منافساً مباشراً وما الذي لا يُعتبر منافساً مباشراً.
+واكتب Search Terms محددة للمنافسين، الأسعار، WTP، التوزيع، والتنظيم.
+
+إذا كانت الفكرة قريبة من فكرة مرفوضة:
+similar_to_rejected=true.
+
+لا تختر WINNER.
+لا تعامل فرضية غير مثبتة كحقيقة.
+"""
+
+    prompt = f"""
+حالة المستخدم:
+
+{case_brief}
+
+القائمة المرفوضة:
+
+{json.dumps(REJECTED_IDEAS, ensure_ascii=False)}
+"""
+
+    return call_json(
+        HUNTER_MODEL,
+        system,
+        prompt,
+        "hunter_ideas_v8",
+        HUNTER_SCHEMA,
+        1900,
+        "THE HUNTER",
+        status,
+        "low",
+    )
+
+
+# =========================================================
+# DDGS SEARCH
+# =========================================================
+
+def domain(url):
+    try:
+        return urlparse(url).netloc.lower().replace("www.", "")
+    except Exception:
+        return ""
+
+
+def search_item(raw, query_type):
+    if not isinstance(raw, dict):
+        return None
+
+    url = raw.get("href") or raw.get("url") or ""
+    if not url:
+        return None
+
+    return {
+        "query_type": query_type,
+        "title": str(raw.get("title") or "").strip(),
+        "url": str(url).strip(),
+        "snippet": cut(
+            str(
+                raw.get("body")
+                or raw.get("snippet")
+                or raw.get("content")
+                or ""
+            ).strip(),
+            600,
+        ),
+        "page_excerpt": "",
+    }
+
+
+def ddgs_search(query, query_type, max_results=5):
+    ddgs = DDGS(timeout=12)
+    rows = ddgs.text(query, max_results=max_results) or []
+    output = []
+
+    for raw in rows:
+        item = search_item(raw, query_type)
+        if item:
+            output.append(item)
+
+    return output
+
+
+def extract_best_pages(sources, max_pages=3):
+    ddgs = DDGS(timeout=12)
+    extracted = 0
+
+    for source in sources:
+        if extracted >= max_pages:
+            break
+
+        try:
+            result = ddgs.extract(source["url"], fmt="text_plain")
+            content = (
+                result.get("content", "")
+                if isinstance(result, dict)
+                else ""
+            )
+
+            if content:
+                source["page_excerpt"] = cut(str(content).strip(), 1500)
+                extracted += 1
+
+        except Exception:
+            pass
+
+        time.sleep(0.6)
+
+    return extracted
+
+
+def dedupe_sources(sources, limit=14):
+    unique = []
+    seen_urls = set()
+    per_domain = {}
+
+    for source in sources:
+        url = source["url"]
+        dm = domain(url)
+
+        if url in seen_urls:
+            continue
+
+        if dm and per_domain.get(dm, 0) >= 3:
+            continue
+
+        seen_urls.add(url)
+        per_domain[dm] = per_domain.get(dm, 0) + 1
+        unique.append(source)
+
+        if len(unique) >= limit:
+            break
+
+    return unique
+
+
+# =========================================================
+# RELEVANCE JUDGE
+# =========================================================
+
+source_eval_schema = obj(
+    {
+        "source_id": {"type": "string"},
+        "relevance_score": {"type": "integer", "minimum": 0, "maximum": 100},
+        "same_job_to_be_done": {"type": "boolean"},
+        "authoritative": {"type": "boolean"},
+        "categories": arr(
+            {
+                "type": "string",
+                "enum": [
+                    "DIRECT_COMPETITOR",
+                    "PRICING_EVIDENCE",
+                    "WTP_EVIDENCE",
+                    "DISTRIBUTION_EVIDENCE",
+                    "REGULATORY_EVIDENCE",
+                    "PLATFORM_RISK",
+                    "BACKGROUND",
+                    "IRRELEVANT",
+                ],
+            },
+            1,
+            4,
+        ),
+        "why_relevant": {"type": "string"},
+    }
+)
+
+RELEVANCE_SCHEMA = obj(
+    {
+        "evaluations": arr(source_eval_schema),
+    }
+)
+
+
+def evaluate_source_relevance(idea, sources, status):
+    packet = []
+
+    for idx, source in enumerate(sources, 1):
+        source["source_id"] = f"S{idx}"
+        packet.append(
+            {
+                "source_id": source["source_id"],
+                "query_type": source["query_type"],
+                "title": source["title"],
+                "url": source["url"],
+                "snippet": source["snippet"],
+                "page_excerpt": cut(source.get("page_excerpt", ""), 900),
+            }
+        )
+
+    system = """
+أنت Research Relevance Judge.
+
+لا تحكم على جودة فكرة المشروع.
+وظيفتك فقط تقييم هل كل مصدر فعلاً متعلق بنفس Job-to-be-Done.
+
+DIRECT_COMPETITOR:
+شركة/منتج يؤدي نفس المهمة الأساسية لنفس نوع المشتري تقريباً.
+
+PRICING_EVIDENCE:
+مصدر يقدم سعراً حقيقياً أو نموذج تسعير متعلق بنفس المهمة.
+
+WTP_EVIDENCE:
+دليل أن المشتري يدفع أو أن المشكلة لها تكلفة مالية واضحة.
+
+DISTRIBUTION_EVIDENCE:
+دليل على قناة وصول فعلية للمشتري: marketplace, directory, ecosystem, public list, buyer community, etc.
+
+REGULATORY_EVIDENCE:
+مصدر تنظيمي/رسمي أو وثيقة قوية توضح قيداً قانونياً أو API/ترخيصاً متعلقاً مباشرة بالمشروع.
+
+PLATFORM_RISK:
+دليل أن منصة أساسية/مزود بنية يقدم نفس الوظيفة أو قد يبتلعها.
+
+BACKGROUND:
+مفيد لفهم المجال لكنه ليس دليلاً على منافس/سعر/WTP/توزيع/تنظيم.
+
+IRRELEVANT:
+لا يتكلم عن نفس Job-to-be-Done.
+
+لا تعتبر Software directory العام منافساً مباشراً.
+لا تعتبر أداة تؤدي وظيفة مختلفة منافساً مباشراً.
+"""
+
+    prompt = f"""
+IDEA:
+
+Name: {idea["name"]}
+Buyer: {idea["buyer"]}
+Job-to-be-Done: {idea["job_to_be_done"]}
+
+Direct competitor MUST mean:
+{idea["direct_competitor_definition"]}
+
+NOT a direct competitor:
+{idea["not_a_direct_competitor"]}
+
+SOURCES:
+{json.dumps(packet, ensure_ascii=False)}
+"""
+
+    result = call_json(
+        OPERATOR_MODEL,
+        system,
+        prompt,
+        "source_relevance_v8",
+        RELEVANCE_SCHEMA,
+        1500,
+        f"Relevance Judge — {idea['name']}",
+        status,
+        "low",
+    )
+
+    if not result["ok"]:
+        return result
+
+    mapping = {x["source_id"]: x for x in result["data"]["evaluations"]}
+
+    for source in sources:
+        source["evaluation"] = mapping.get(
+            source["source_id"],
+            {
+                "source_id": source["source_id"],
+                "relevance_score": 0,
+                "same_job_to_be_done": False,
+                "authoritative": False,
+                "categories": ["IRRELEVANT"],
+                "why_relevant": "لم يرجع تقييم للمصدر.",
+            },
+        )
+
+    return {"ok": True, "sources": sources, "error": None}
+
+
+# =========================================================
+# RESEARCH GATE
+# =========================================================
+
+def category_sources(sources, category, min_score=60):
+    return [
+        s
+        for s in sources
+        if s["evaluation"]["relevance_score"] >= min_score
+        and category in s["evaluation"]["categories"]
+    ]
+
+
+def research_gate(idea, sources):
+    direct = category_sources(sources, "DIRECT_COMPETITOR", 65)
+    pricing = category_sources(sources, "PRICING_EVIDENCE", 60)
+    wtp = category_sources(sources, "WTP_EVIDENCE", 60)
+    distribution = category_sources(sources, "DISTRIBUTION_EVIDENCE", 60)
+    regulatory = category_sources(sources, "REGULATORY_EVIDENCE", 65)
+
+    relevant_domains = {
+        domain(s["url"])
+        for s in sources
+        if s["evaluation"]["relevance_score"] >= 60
+        and "IRRELEVANT" not in s["evaluation"]["categories"]
+    }
+
+    checks = {
+        "2_direct_competitors": len(direct) >= 2,
+        "pricing_evidence": len(pricing) >= 1,
+        "wtp_evidence": len(wtp) >= 1,
+        "distribution_evidence": len(distribution) >= 1,
+        "3_relevant_domains": len(relevant_domains) >= 3,
+        "regulatory_evidence_if_needed": (
+            len(regulatory) >= 1 if idea["regulatory_sensitive"] else True
+        ),
+    }
+
+    score = sum(1 for v in checks.values() if v)
+    max_score = len(checks)
+
+    if score <= 2:
+        status = "RESEARCH_FAILED"
+    elif score < max_score:
+        status = "INSUFFICIENT_EVIDENCE"
+    else:
+        status = "SUFFICIENT"
+
+    return {
+        "status": status,
+        "score": score,
+        "max_score": max_score,
+        "checks": checks,
+        "direct_competitors": [s["source_id"] for s in direct],
+        "pricing_sources": [s["source_id"] for s in pricing],
+        "wtp_sources": [s["source_id"] for s in wtp],
+        "distribution_sources": [s["source_id"] for s in distribution],
+        "regulatory_sources": [s["source_id"] for s in regulatory],
+        "relevant_domain_count": len(relevant_domains),
+    }
+
+
+def missing_query_types(gate):
+    missing = []
+
+    if not gate["checks"]["2_direct_competitors"]:
+        missing.append("direct_competitors")
+    if not gate["checks"]["pricing_evidence"]:
+        missing.append("pricing")
+    if not gate["checks"]["wtp_evidence"]:
+        missing.append("wtp")
+    if not gate["checks"]["distribution_evidence"]:
+        missing.append("distribution")
+    if not gate["checks"]["regulatory_evidence_if_needed"]:
+        missing.append("regulatory")
+
+    return missing
+
+
+# =========================================================
+# TARGETED RESEARCH
+# =========================================================
+
+def base_queries(idea):
+    queries = [
+        ("direct_competitors", idea["search_term_1"]),
+        ("direct_competitors", idea["search_term_2"]),
+        ("direct_competitors", idea["search_term_3"]),
+        ("pricing", idea["pricing_search_term"]),
+        ("wtp", idea["wtp_search_term"]),
+        ("distribution", idea["distribution_search_term"]),
+    ]
+
+    if idea["regulatory_sensitive"] and idea["regulatory_search_term"].strip():
+        queries.append(("regulatory", idea["regulatory_search_term"]))
+
+    return queries
+
+
+def retry_queries_for(idea, missing_types):
+    mapping = {
+        "direct_competitors": [
+            f'"{idea["job_to_be_done"]}" software',
+            f'"{idea["job_to_be_done"]}" API pricing',
+        ],
+        "pricing": [
+            f'"{idea["job_to_be_done"]}" pricing',
+            f'"{idea["job_to_be_done"]}" price API SaaS',
+        ],
+        "wtp": [
+            f'"{idea["buyer"]}" "{idea["problem"]}" cost',
+            f'"{idea["job_to_be_done"]}" ROI case study',
+        ],
+        "distribution": [
+            f'"{idea["buyer"]}" marketplace directory association',
+            f'"{idea["buyer"]}" software marketplace ecosystem',
+        ],
+        "regulatory": [
+            idea["regulatory_search_term"],
+            f'"{idea["job_to_be_done"]}" regulation API license official',
+        ],
+    }
+
+    output = []
+    for missing in missing_types:
+        for q in mapping.get(missing, []):
+            if q and q.strip():
+                output.append((missing, q))
+    return output
+
+
+def run_search_queries(queries, status, idea_name):
+    found = []
+
+    for idx, (query_type, query) in enumerate(queries, 1):
+        status.info(
+            f"🔎 {idea_name}: بحث {idx}/{len(queries)} — {query_type}"
+        )
+
+        try:
+            found.extend(ddgs_search(query, query_type, max_results=5))
+        except Exception as e:
+            found.append(
+                {
+                    "query_type": query_type,
+                    "title": "",
+                    "url": "",
+                    "snippet": f"SEARCH_ERROR: {e}",
+                    "page_excerpt": "",
+                }
+            )
+
+        time.sleep(0.8)
+
+    return [x for x in found if x.get("url")]
+
+
+def research_one_idea(idea, status):
+    # Phase 1
+    sources = dedupe_sources(run_search_queries(base_queries(idea), status, idea["name"]))
+    extract_best_pages(sources, max_pages=3)
+
+    judged = evaluate_source_relevance(idea, sources, status)
+    if not judged["ok"]:
+        return {
+            "ok": False,
+            "research_status": "RESEARCH_FAILED",
+            "gate": None,
+            "sources": sources,
+            "error": judged["error"],
+        }
+
+    sources = judged["sources"]
+    gate = research_gate(idea, sources)
+
+    # Phase 2: automatic re-search if needed
+    if gate["status"] != "SUFFICIENT":
+        missing = missing_query_types(gate)
+        retry_qs = retry_queries_for(idea, missing)
+
+        if retry_qs:
+            status.warning(
+                f"🔁 {idea['name']}: البحث غير كافٍ. إعادة بحث مستهدفة: "
+                + ", ".join(missing)
+            )
+
+            extra = run_search_queries(retry_qs, status, idea["name"])
+            combined = dedupe_sources(sources + extra, limit=18)
+            extract_best_pages(combined, max_pages=4)
+
+            judged2 = evaluate_source_relevance(idea, combined, status)
+            if judged2["ok"]:
+                sources = judged2["sources"]
+                gate = research_gate(idea, sources)
+
+    return {
+        "ok": True,
+        "research_status": gate["status"],
+        "gate": gate,
+        "sources": sources,
+        "error": None,
+    }
+
+
+def research_all(ideas, status):
+    research = {}
+
+    for idx, idea in enumerate(ideas, 1):
+        status.info(
+            f"🌐 Evidence Research {idx}/{len(ideas)}: {idea['name']}"
+        )
+        research[idea["id"]] = research_one_idea(idea, status)
+        time.sleep(1)
+
+    return research
+
+
+# =========================================================
+# EVIDENCE PACKET
+# =========================================================
+
+def source_packet(source):
+    ev = source["evaluation"]
+    return {
+        "source_id": source["source_id"],
+        "title": source["title"],
+        "url": source["url"],
+        "query_type": source["query_type"],
+        "snippet": source["snippet"],
+        "page_excerpt": cut(source.get("page_excerpt", ""), 800),
+        "relevance_score": ev["relevance_score"],
+        "same_job_to_be_done": ev["same_job_to_be_done"],
+        "authoritative": ev["authoritative"],
+        "categories": ev["categories"],
+        "why_relevant": ev["why_relevant"],
+    }
+
+
+def evidence_packet(research_result):
+    sources = [
+        s
+        for s in research_result.get("sources", [])
+        if s.get("evaluation", {}).get("relevance_score", 0) >= 55
+        and "IRRELEVANT" not in s.get("evaluation", {}).get("categories", [])
+    ]
+
+    sources = sorted(
+        sources,
+        key=lambda s: s["evaluation"]["relevance_score"],
+        reverse=True,
+    )
+
+    return [source_packet(s) for s in sources[:12]]
+
+
+# =========================================================
+# KILLER PER-IDEA SCHEMA
+# =========================================================
+
+claim_schema = obj(
+    {
+        "claim": {"type": "string"},
+        "status": {
+            "type": "string",
+            "enum": [
+                "VERIFIED_RISK",
+                "UNVERIFIED_RISK",
+                "UNKNOWN",
+            ],
+        },
+        "evidence_ids": arr({"type": "string"}, 0, 5),
+    }
+)
+
+KILLER_ONE_SCHEMA = obj(
     {
         "idea_id": {"type": "string"},
-        "top_failure_reason_1": {"type": "string"},
-        "top_failure_reason_2": {"type": "string"},
-        "top_failure_reason_3": {"type": "string"},
+        "research_status": {
+            "type": "string",
+            "enum": [
+                "SUFFICIENT",
+                "INSUFFICIENT_EVIDENCE",
+                "RESEARCH_FAILED",
+            ],
+        },
+        "top_risks": arr(claim_schema, 3, 3),
         "kill_shot": {"type": "string"},
+        "kill_shot_status": {
+            "type": "string",
+            "enum": [
+                "VERIFIED_RISK",
+                "UNVERIFIED_RISK",
+                "UNKNOWN",
+            ],
+        },
+        "kill_shot_evidence_ids": arr({"type": "string"}, 0, 5),
         "evidence_for": {"type": "string"},
         "evidence_against": {"type": "string"},
         "unknowns": {"type": "string"},
         "score_out_of_10": {"type": "integer", "minimum": 0, "maximum": 10},
         "decision": {
             "type": "string",
-            "enum": ["SURVIVES", "KILL IT", "INSUFFICIENT EVIDENCE"],
+            "enum": [
+                "SURVIVES",
+                "KILL IT",
+                "INSUFFICIENT EVIDENCE",
+                "RESEARCH FAILED",
+            ],
         },
     }
 )
 
-rebuttal_one_schema = obj(
+
+def enforce_killer_evidence(idea, research_result, data):
+    # Keep research state aligned with actual gate
+    actual_status = research_result["research_status"]
+    data["research_status"] = actual_status
+
+    # If research failed, model cannot kill or survive
+    if actual_status == "RESEARCH_FAILED":
+        data["decision"] = "RESEARCH FAILED"
+        return data
+
+    # If evidence is insufficient, KILL requires a verified kill shot with evidence IDs
+    if actual_status == "INSUFFICIENT_EVIDENCE":
+        if not (
+            data["kill_shot_status"] == "VERIFIED_RISK"
+            and len(data["kill_shot_evidence_ids"]) >= 1
+        ):
+            data["decision"] = "INSUFFICIENT EVIDENCE"
+
+    # Any VERIFIED claim must include evidence
+    for risk in data["top_risks"]:
+        if risk["status"] == "VERIFIED_RISK" and not risk["evidence_ids"]:
+            risk["status"] = "UNVERIFIED_RISK"
+
+    if (
+        data["kill_shot_status"] == "VERIFIED_RISK"
+        and not data["kill_shot_evidence_ids"]
+    ):
+        data["kill_shot_status"] = "UNVERIFIED_RISK"
+        if data["decision"] == "KILL IT":
+            data["decision"] = "INSUFFICIENT EVIDENCE"
+
+    return data
+
+
+def run_killer_one(idea, research_result, status):
+    system = """
+أنت THE KILLER.
+
+هاجم فكرة واحدة فقط.
+
+قواعد الأدلة:
+1. لا تكتب أي ادعاء تنظيمي أو تنافسي أو سعري كحقيقة إلا إذا دعمه Source ID.
+2. إذا لم يوجد Source ID مناسب: status = UNVERIFIED_RISK أو UNKNOWN.
+3. VERIFIED_RISK يجب أن يحتوي evidence_ids.
+4. لا تجعل غياب الدليل دليلاً على الفشل.
+5. إذا Research Status = INSUFFICIENT_EVIDENCE ولم يوجد Kill Shot موثق فعلاً:
+   decision = INSUFFICIENT EVIDENCE.
+6. RESEARCH FAILED يعني لا يجوز الحكم KILL/SURVIVES.
+
+KILL IT فقط إذا يوجد عيب بنيوي موثق يمكنه وحده تدمير الاقتصاديات أو قابلية التنفيذ.
+"""
+
+    packet = {
+        "idea": idea,
+        "research_gate": research_result["gate"],
+        "research_status": research_result["research_status"],
+        "evidence": evidence_packet(research_result),
+    }
+
+    result = call_json(
+        KILLER_MODEL,
+        system,
+        json.dumps(packet, ensure_ascii=False),
+        "killer_one_v8",
+        KILLER_ONE_SCHEMA,
+        1300,
+        f"KILLER — {idea['name']}",
+        status,
+        "none",
+    )
+
+    if result["ok"]:
+        result["data"] = enforce_killer_evidence(
+            idea, research_result, result["data"]
+        )
+
+    return result
+
+
+# =========================================================
+# HUNTER REBUTTAL
+# =========================================================
+
+REBUTTAL_ONE_SCHEMA = obj(
     {
         "idea_id": {"type": "string"},
         "valid_objection": {"type": "string"},
+        "valid_objection_evidence_ids": arr({"type": "string"}, 0, 5),
         "disputed_objection": {"type": "string"},
+        "disputed_reason": {"type": "string"},
         "evidence_needed": {"type": "string"},
         "position": {
             "type": "string",
@@ -497,12 +1165,56 @@ rebuttal_one_schema = obj(
     }
 )
 
-killer_final_one_schema = obj(
+
+def run_rebuttal_one(idea, research_result, killer_data, status):
+    system = """
+أنت THE HUNTER.
+
+هذه فرصتك الوحيدة للرد على Killer لفكرة واحدة.
+
+لا تضف فكرة جديدة.
+لا تنكر دليلاً موثقاً بلا سبب.
+لا تعتبر ادعاء غير موثق حقيقة.
+DROP أفضل من الدفاع عن عيب قاتل موثق.
+NEEDS MORE EVIDENCE أفضل من التخمين.
+"""
+
+    packet = {
+        "idea": idea,
+        "research_status": research_result["research_status"],
+        "research_gate": research_result["gate"],
+        "evidence": evidence_packet(research_result),
+        "killer": killer_data,
+    }
+
+    return call_json(
+        HUNTER_MODEL,
+        system,
+        json.dumps(packet, ensure_ascii=False),
+        "hunter_rebuttal_one_v8",
+        REBUTTAL_ONE_SCHEMA,
+        700,
+        f"HUNTER REBUTTAL — {idea['name']}",
+        status,
+        "low",
+    )
+
+
+# =========================================================
+# KILLER FINAL
+# =========================================================
+
+KILLER_FINAL_ONE_SCHEMA = obj(
     {
         "idea_id": {"type": "string"},
         "decision": {
             "type": "string",
-            "enum": ["SURVIVES", "KILL IT", "INSUFFICIENT EVIDENCE"],
+            "enum": [
+                "SURVIVES",
+                "KILL IT",
+                "INSUFFICIENT EVIDENCE",
+                "RESEARCH FAILED",
+            ],
         },
         "remaining_problem": {"type": "string"},
         "wtp_real": {"type": "boolean"},
@@ -511,14 +1223,150 @@ killer_final_one_schema = obj(
             "type": "string",
             "enum": ["FEATURE", "COMPANY", "UNCLEAR"],
         },
-        "final_score_out_of_10": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 10,
+        "final_score_out_of_10": {"type": "integer", "minimum": 0, "maximum": 10},
+        "decisive_claim": {"type": "string"},
+        "decisive_claim_status": {
+            "type": "string",
+            "enum": ["VERIFIED_RISK", "UNVERIFIED_RISK", "UNKNOWN"],
         },
+        "decisive_evidence_ids": arr({"type": "string"}, 0, 5),
         "evidence_gap": {"type": "string"},
     }
 )
+
+
+def enforce_final_decision(research_result, data):
+    actual_status = research_result["research_status"]
+
+    if actual_status == "RESEARCH_FAILED":
+        data["decision"] = "RESEARCH FAILED"
+        return data
+
+    if (
+        data["decisive_claim_status"] == "VERIFIED_RISK"
+        and not data["decisive_evidence_ids"]
+    ):
+        data["decisive_claim_status"] = "UNVERIFIED_RISK"
+
+    if data["decision"] == "KILL IT":
+        if not (
+            data["decisive_claim_status"] == "VERIFIED_RISK"
+            and len(data["decisive_evidence_ids"]) >= 1
+        ):
+            data["decision"] = "INSUFFICIENT EVIDENCE"
+
+    if actual_status == "INSUFFICIENT_EVIDENCE" and data["decision"] == "SURVIVES":
+        # Insufficient evidence cannot become a true survivor.
+        data["decision"] = "INSUFFICIENT EVIDENCE"
+
+    return data
+
+
+def run_killer_final_one(
+    idea,
+    research_result,
+    killer_data,
+    rebuttal_data,
+    status,
+):
+    system = """
+أنت THE KILLER في الجولة النهائية لفكرة واحدة.
+
+قواعد الحكم:
+- KILL IT يحتاج Decisive Claim موثقاً بـ evidence_ids.
+- إذا البحث غير كافٍ ولا يوجد عيب قاتل موثق: INSUFFICIENT EVIDENCE.
+- إذا البحث فشل: RESEARCH FAILED.
+- SURVIVES يحتاج بحثاً كافياً وعدم وجود Kill Shot موثق.
+- لا تحول فرضية أو توقع ("قد تضيف Stripe الميزة") إلى حقيقة.
+"""
+
+    packet = {
+        "idea": idea,
+        "research_status": research_result["research_status"],
+        "research_gate": research_result["gate"],
+        "evidence": evidence_packet(research_result),
+        "killer_first": killer_data,
+        "hunter_rebuttal": rebuttal_data,
+    }
+
+    result = call_json(
+        KILLER_MODEL,
+        system,
+        json.dumps(packet, ensure_ascii=False),
+        "killer_final_one_v8",
+        KILLER_FINAL_ONE_SCHEMA,
+        850,
+        f"KILLER FINAL — {idea['name']}",
+        status,
+        "none",
+    )
+
+    if result["ok"]:
+        result["data"] = enforce_final_decision(
+            research_result, result["data"]
+        )
+
+    return result
+
+
+# =========================================================
+# PER-IDEA RED TEAM
+# =========================================================
+
+def red_team_all(ideas, research, status):
+    output = {}
+
+    for idx, idea in enumerate(ideas, 1):
+        idea_id = idea["id"]
+        r = research[idea_id]
+
+        status.info(
+            f"⚔️ Red Team {idx}/{len(ideas)}: {idea['name']}"
+        )
+
+        killer = run_killer_one(idea, r, status)
+        if not killer["ok"]:
+            return {
+                "ok": False,
+                "error": f"{idea_id} Killer failed:\n{killer['error']}",
+                "data": output,
+            }
+
+        rebuttal = run_rebuttal_one(idea, r, killer["data"], status)
+        if not rebuttal["ok"]:
+            return {
+                "ok": False,
+                "error": f"{idea_id} Hunter rebuttal failed:\n{rebuttal['error']}",
+                "data": output,
+            }
+
+        killer_final = run_killer_final_one(
+            idea,
+            r,
+            killer["data"],
+            rebuttal["data"],
+            status,
+        )
+
+        if not killer_final["ok"]:
+            return {
+                "ok": False,
+                "error": f"{idea_id} Killer final failed:\n{killer_final['error']}",
+                "data": output,
+            }
+
+        output[idea_id] = {
+            "killer_first": killer["data"],
+            "hunter_rebuttal": rebuttal["data"],
+            "killer_final": killer_final["data"],
+        }
+
+    return {"ok": True, "error": None, "data": output}
+
+
+# =========================================================
+# OPERATOR
+# =========================================================
 
 operator_item_schema = obj(
     {
@@ -545,447 +1393,15 @@ operator_item_schema = obj(
         "fastest_test": {"type": "string"},
         "biggest_risk": {"type": "string"},
         "truth_test": {"type": "string"},
+        "evidence_quality_note": {"type": "string"},
     }
 )
 
-OPERATOR_SCHEMA = obj({"evaluations": arr(operator_item_schema)})
-
-
-# =========================================================
-# VALIDATORS
-# =========================================================
-
-
-def validate_hunter(data):
-    ideas = data.get("ideas", [])
-    if len(ideas) != 3:
-        return False, f"Expected exactly 3 ideas, got {len(ideas)}"
-
-    ids = [str(x.get("id", "")) for x in ideas]
-    if len(set(ids)) != 3 or any(not x for x in ids):
-        return False, f"Idea IDs must be unique and non-empty: {ids}"
-
-    return True, ""
-
-
-def validator_for_idea(expected_id):
-    def _validate(data):
-        actual = str(data.get("idea_id", ""))
-        if actual != str(expected_id):
-            return False, f"Expected idea_id={expected_id}, got {actual}"
-        return True, ""
-
-    return _validate
-
-
-def operator_validator(expected_ids):
-    expected = {str(x) for x in expected_ids}
-
-    def _validate(data):
-        rows = data.get("evaluations", [])
-        actual = {str(x.get("idea_id", "")) for x in rows}
-        if actual != expected:
-            return False, f"Expected evaluation IDs {sorted(expected)}, got {sorted(actual)}"
-        return True, ""
-
-    return _validate
-
-
-# =========================================================
-# HUNTER
-# =========================================================
-
-
-def run_hunter(case_brief, status):
-    system = """
-أنت THE HUNTER.
-
-ابحث عن أماكن تتحرك فيها الأموال فعلياً.
-
-الأولوية:
-- ألم مالي حقيقي.
-- willingness-to-pay.
-- distribution واضحة.
-- automation مرتفعة.
-- recurring usage.
-- speed to revenue.
-
-ممنوع:
-- AI wrapper بلا قيمة مستقلة.
-- dashboard عام.
-- أداة يستطيع ChatGPT تنفيذها بما يكفي.
-- إعادة تغليف فكرة مرفوضة.
-
-أخرج 3 أفكار فقط ومختلفة اقتصادياً.
-لا تختر WINNER.
-لا تعامل الافتراضات كحقائق.
-"""
-
-    prompt = f"""
-حالة المستخدم:
-
-{case_brief}
-
-القائمة المرفوضة:
-
-{json.dumps(REJECTED_IDEAS, ensure_ascii=False)}
-"""
-
-    return call_json(
-        HUNTER_MODEL,
-        system,
-        prompt,
-        "hunter_ideas_v7",
-        HUNTER_SCHEMA,
-        1500,
-        "THE HUNTER",
-        status,
-        "low",
-        validator=validate_hunter,
-    )
-
-
-# =========================================================
-# DDGS WEB RESEARCH
-# =========================================================
-
-
-def search_item(raw, query_type, query):
-    if not isinstance(raw, dict):
-        return None
-
-    url = raw.get("href") or raw.get("url") or ""
-    if not url:
-        return None
-
-    return {
-        "title": str(raw.get("title") or "").strip(),
-        "url": str(url).strip(),
-        "snippet": cut(
-            str(raw.get("body") or raw.get("snippet") or raw.get("content") or "").strip(),
-            550,
-        ),
-        "query_type": query_type,
-        "query": query,
+OPERATOR_SCHEMA = obj(
+    {
+        "evaluations": arr(operator_item_schema),
     }
-
-
-def domain(url):
-    try:
-        return urlparse(url).netloc.lower().replace("www.", "")
-    except Exception:
-        return ""
-
-
-def queries_for(idea):
-    # أكثر تحديداً من V6 حتى لا نخلط "السوق العام" مع "المنافس المباشر".
-    return [
-        (
-            "direct_competitors",
-            f'"{idea["name"]}" competitors alternative software pricing',
-        ),
-        (
-            "job_to_be_done",
-            f'{cut(idea["buyer"],160)} {cut(idea["problem"],180)} solution software competitors',
-        ),
-        (
-            "pricing",
-            f'{cut(idea["product"],180)} pricing subscription fee competitor',
-        ),
-        (
-            "wtp_distribution",
-            f'{cut(idea["buyer"],160)} {cut(idea["problem"],160)} cost pain budget buying software',
-        ),
-        (
-            "risk_regulation",
-            f'{cut(idea["product"],180)} regulation legal risk API platform compliance',
-        ),
-    ]
-
-
-def research_gate(result):
-    sources = result.get("sources", [])
-
-    domains = {domain(x.get("url", "")) for x in sources if domain(x.get("url", ""))}
-    extracted = sum(1 for x in sources if x.get("page_excerpt"))
-    query_types = {x.get("query_type") for x in sources}
-
-    checks = {
-        "at_least_4_sources": len(sources) >= 4,
-        "at_least_3_domains": len(domains) >= 3,
-        "at_least_2_extracted_pages": extracted >= 2,
-        "direct_competitor_search": "direct_competitors" in query_types,
-        "pricing_search": "pricing" in query_types,
-        "wtp_distribution_search": "wtp_distribution" in query_types,
-    }
-
-    passed = sum(1 for value in checks.values() if value)
-    sufficient = passed >= 5
-
-    return {
-        "sufficient": sufficient,
-        "score": passed,
-        "max_score": len(checks),
-        "checks": checks,
-        "source_count": len(sources),
-        "domain_count": len(domains),
-        "extracted_pages": extracted,
-    }
-
-
-def research_idea(idea, status):
-    errors = []
-    found = []
-
-    try:
-        ddgs = DDGS(timeout=12)
-    except Exception as e:
-        return {
-            "ok": False,
-            "text": "",
-            "sources": [],
-            "gate": {
-                "sufficient": False,
-                "score": 0,
-                "max_score": 6,
-                "checks": {},
-                "source_count": 0,
-                "domain_count": 0,
-                "extracted_pages": 0,
-            },
-            "error": f"DDGS init failed: {e}",
-        }
-
-    queries = queries_for(idea)
-
-    for index, (query_type, query) in enumerate(queries, 1):
-        status.info(
-            f"🔎 {idea['name']}: بحث {index}/{len(queries)} — {query_type}"
-        )
-
-        try:
-            results = ddgs.text(query, max_results=4) or []
-            for raw in results:
-                item = search_item(raw, query_type, query)
-                if item:
-                    found.append(item)
-        except Exception as e:
-            errors.append(f"Search failed [{query_type}] {query}: {e}")
-
-        time.sleep(0.8)
-
-    # dedupe + domain cap
-    unique = []
-    seen_urls = set()
-    per_domain = {}
-
-    for item in found:
-        url = item["url"]
-        dm = domain(url)
-
-        if url in seen_urls:
-            continue
-        if dm and per_domain.get(dm, 0) >= 2:
-            continue
-
-        seen_urls.add(url)
-        per_domain[dm] = per_domain.get(dm, 0) + 1
-        unique.append(item)
-
-        if len(unique) >= 9:
-            break
-
-    # اقرأ أفضل 3 مصادر فقط لتجنب البطء.
-    for index, source in enumerate(unique[:3], 1):
-        status.info(f"📄 قراءة مصدر {index}/3: {idea['name']}")
-
-        try:
-            extracted = ddgs.extract(source["url"], fmt="text_plain")
-            content = extracted.get("content", "") if isinstance(extracted, dict) else ""
-            source["page_excerpt"] = cut(str(content).strip(), 1400)
-        except Exception as e:
-            source["page_excerpt"] = ""
-            errors.append(f"Extract failed {source['url']}: {e}")
-
-        time.sleep(0.6)
-
-    packets = []
-    for number, source in enumerate(unique, 1):
-        packets.append(
-            f"""
-SOURCE {number}
-Query type: {source['query_type']}
-Title: {source['title']}
-URL: {source['url']}
-Search snippet: {source['snippet']}
-Page excerpt: {source.get('page_excerpt','')}
-"""
-        )
-
-    result = {
-        "ok": bool(unique),
-        "text": cut("\n\n---\n\n".join(packets), 6500),
-        "sources": unique,
-        "error": "\n".join(errors[-8:]),
-    }
-    result["gate"] = research_gate(result)
-    return result
-
-
-# =========================================================
-# PER-IDEA KILLER / HUNTER / KILLER
-# =========================================================
-
-
-def run_killer_one(idea, research, status):
-    system = """
-أنت THE KILLER.
-أنت مستثمر متشائم هدفه منعنا من بناء المشروع الخطأ.
-
-هذه جلسة لفكرة واحدة فقط.
-لا تتحدث عن أي فكرة أخرى.
-
-افحص:
-- direct competitors
-- platform-native alternatives
-- WTP
-- CAC / distribution
-- churn / repeat usage
-- regulation / liability / privacy
-- platform/API risk
-- ChatGPT substitution
-- Feature vs Company
-- moat
-
-قواعد مهمة:
-1) لا تعامل ادعاء Hunter كحقيقة إذا لم يدعمه البحث.
-2) إذا البحث غير كافٍ للحكم، استخدم INSUFFICIENT EVIDENCE بدلاً من KILL IT.
-3) KILL IT يحتاج سبباً اقتصادياً أو تنافسياً واضحاً، وليس مجرد غياب دليل.
-4) لا تقترح أفكاراً جديدة.
-"""
-
-    prompt = f"""
-IDEA:
-{json.dumps(idea, ensure_ascii=False)}
-
-RESEARCH QUALITY GATE:
-{json.dumps(research['gate'], ensure_ascii=False)}
-
-WEB RESEARCH:
-{cut(research['text'], 5600)}
-
-يجب أن يكون idea_id في الإجابة بالضبط: {idea['id']}
-"""
-
-    return call_json(
-        KILLER_MODEL,
-        system,
-        prompt,
-        f"killer_one_{re.sub(r'[^a-zA-Z0-9_]', '_', idea['id'])}",
-        killer_one_schema,
-        900,
-        f"THE KILLER — {idea['name']}",
-        status,
-        "none",
-        validator=validator_for_idea(idea["id"]),
-    )
-
-
-def run_rebuttal_one(idea, research, killer, status):
-    system = """
-أنت THE HUNTER.
-هذه فرصتك الوحيدة للرد على Killer في هذه الفكرة فقط.
-
-لا تضف فكرة جديدة.
-إذا Killer أثبت أن الفكرة سيئة: DROP.
-إذا المشكلة هي نقص دليل فقط: NEEDS MORE EVIDENCE.
-إذا يوجد دفاع قوي ومدعوم: DEFEND.
-ممنوع ترقيع فكرة ميتة.
-"""
-
-    prompt = f"""
-IDEA:
-{json.dumps(idea, ensure_ascii=False)}
-
-RESEARCH GATE:
-{json.dumps(research['gate'], ensure_ascii=False)}
-
-KILLER FIRST ATTACK:
-{json.dumps(killer, ensure_ascii=False)}
-
-RESEARCH EXCERPTS:
-{cut(research['text'], 3300)}
-
-يجب أن يكون idea_id بالضبط: {idea['id']}
-"""
-
-    return call_json(
-        HUNTER_MODEL,
-        system,
-        prompt,
-        f"hunter_rebuttal_{re.sub(r'[^a-zA-Z0-9_]', '_', idea['id'])}",
-        rebuttal_one_schema,
-        600,
-        f"HUNTER REBUTTAL — {idea['name']}",
-        status,
-        "low",
-        validator=validator_for_idea(idea["id"]),
-    )
-
-
-def run_killer_final_one(idea, research, killer, rebuttal, status):
-    system = """
-أنت THE KILLER.
-هذه آخر فرصة للحكم على فكرة واحدة فقط.
-
-أصدر أحد الأحكام:
-- SURVIVES
-- KILL IT
-- INSUFFICIENT EVIDENCE
-
-قواعد:
-- غياب الدليل وحده لا يساوي KILL IT.
-- إذا Research Gate ضعيف ولا يوجد Kill Shot مستقل قوي، استخدم INSUFFICIENT EVIDENCE.
-- لا تقترح فكرة جديدة.
-- لا تحكم على أي فكرة أخرى.
-"""
-
-    prompt = f"""
-IDEA:
-{json.dumps(idea, ensure_ascii=False)}
-
-RESEARCH GATE:
-{json.dumps(research['gate'], ensure_ascii=False)}
-
-FIRST KILLER ATTACK:
-{json.dumps(killer, ensure_ascii=False)}
-
-HUNTER REBUTTAL:
-{json.dumps(rebuttal, ensure_ascii=False)}
-
-RESEARCH EXCERPTS:
-{cut(research['text'], 3000)}
-
-يجب أن يكون idea_id بالضبط: {idea['id']}
-"""
-
-    return call_json(
-        KILLER_MODEL,
-        system,
-        prompt,
-        f"killer_final_{re.sub(r'[^a-zA-Z0-9_]', '_', idea['id'])}",
-        killer_final_one_schema,
-        650,
-        f"KILLER FINAL — {idea['name']}",
-        status,
-        "none",
-        validator=validator_for_idea(idea["id"]),
-    )
-
-
-# =========================================================
-# OPERATOR
-# =========================================================
+)
 
 
 def recalc_operator(data):
@@ -1004,9 +1420,17 @@ def recalc_operator(data):
             + item["stack_fit"]
         )
 
-    evaluations.sort(key=lambda x: x["total_score"], reverse=True)
+    evaluations.sort(
+        key=lambda x: x["total_score"],
+        reverse=True,
+    )
 
-    winner = evaluations[0] if evaluations and evaluations[0]["total_score"] > 85 else None
+    winner = (
+        evaluations[0]
+        if evaluations and evaluations[0]["total_score"] > 85
+        else None
+    )
+
     highest = evaluations[0]["total_score"] if evaluations else None
 
     return {
@@ -1014,7 +1438,8 @@ def recalc_operator(data):
         "winner_exists": bool(winner),
         "winner_idea_id": winner["idea_id"] if winner else "",
         "winner_reason": (
-            f"أعلى نتيجة بعد إعادة الحساب محلياً: {winner['total_score']}/100"
+            f"أعلى نتيجة بعد إعادة الحساب محلياً: "
+            f"{winner['total_score']}/100"
             if winner
             else (
                 f"لا توجد فكرة تجاوزت 85/100. أعلى نتيجة: {highest}/100"
@@ -1025,80 +1450,88 @@ def recalc_operator(data):
     }
 
 
-def run_operator(survivors, research, rounds, status):
-    expected_ids = [idea["id"] for idea in survivors]
-
+def run_operator(survivors, research, redteam, status):
     system = """
 أنت THE OPERATOR / ECONOMIST.
-أنت CTO + CFO + Growth Operator.
 
-قيّم فقط الأفكار التي نجت فعلياً بكلمة SURVIVES.
-لا تقيّم KILL IT ولا INSUFFICIENT EVIDENCE.
+قيّم فقط الأفكار التي انتهت SURVIVES.
 
 النقاط:
-Severity = 15
-WTP = 15
-Distribution = 15
-Automation = 15
-Recurring = 10
-Competition = 10
-Moat = 5
-Speed to Revenue = 10
-Stack Fit = 5
+Severity 15
+WTP 15
+Distribution 15
+Automation 15
+Recurring 10
+Competition 10
+Moat 5
+Speed 10
+Stack Fit 5
 
 لا ترفع الدرجة للوصول إلى 85.
-لا تخترع CAC/LTV كحقائق؛ سمّها تقديرات إذا لم يوجد دليل.
-ركز على أول عميل يدفع.
+لا تستخدم معلومة غير مدعومة كمعلومة مؤكدة.
+إذا WTP أو CAC أو LTV تقديرية، اذكر أنها تقدير.
 """
 
-    payload = []
-    for idea in survivors:
-        payload.append(
-            {
-                "idea": idea,
-                "research_gate": research[idea["id"]]["gate"],
-                "research": cut(research[idea["id"]]["text"], 2600),
-                "red_team": rounds[idea["id"]],
+    payload = {
+        "surviving_ideas": survivors,
+        "research": {
+            idea["id"]: {
+                "gate": research[idea["id"]]["gate"],
+                "evidence": evidence_packet(research[idea["id"]]),
             }
-        )
+            for idea in survivors
+        },
+        "redteam": {
+            idea["id"]: redteam[idea["id"]]["killer_final"]
+            for idea in survivors
+        },
+    }
 
-    return call_json(
+    result = call_json(
         OPERATOR_MODEL,
         system,
         json.dumps(payload, ensure_ascii=False),
-        "operator_v7",
+        "operator_v8",
         OPERATOR_SCHEMA,
-        1500,
+        1700,
         "THE OPERATOR",
         status,
         "low",
-        validator=operator_validator(expected_ids),
     )
+
+    if result["ok"]:
+        result["data"] = recalc_operator(result["data"])
+
+    return result
 
 
 # =========================================================
 # FINAL OBJECTION / VERDICT
 # =========================================================
 
-
-def final_objection(operator, survivors, research, rounds, status):
+def final_objection(operator, survivors, research, status):
     if not operator["winner_exists"]:
         return {
             "ok": True,
             "text": (
                 "## FINAL OBJECTION\n\n"
-                "لا يوجد Winner فوق 85/100؛ إجبار النظام على الاختيار يخالف قواعد التقييم."
+                "لا يوجد Winner فوق 85/100؛ "
+                "إجبار النظام على اختيار مشروع يخالف قواعد التقييم."
             ),
         }
 
     winner_id = operator["winner_idea_id"]
-    winner = next(idea for idea in survivors if idea["id"] == winner_id)
+    winner = next(
+        (idea for idea in survivors if idea["id"] == winner_id),
+        None,
+    )
 
     system = """
 أنت THE KILLER.
+
 هذه آخر فرصة لقتل الـWinner.
-اكتب أقوى حجة واحدة يمكن أن تجعله ينتهي عند $0 MRR.
 استخدم الأدلة فقط.
+إذا كانت أقوى حجة مجرد فرضية غير موثقة، قل إنها UNVERIFIED.
 لا تقترح فكرة جديدة.
 """
 
@@ -1106,9 +1539,10 @@ def final_objection(operator, survivors, research, rounds, status):
         {
             "winner": winner,
             "operator": operator,
-            "research_gate": research[winner_id]["gate"],
-            "research": cut(research[winner_id]["text"], 3000),
-            "red_team": rounds[winner_id],
+            "research": {
+                "gate": research[winner_id]["gate"],
+                "evidence": evidence_packet(research[winner_id]),
+            },
         },
         ensure_ascii=False,
     )
@@ -1117,39 +1551,34 @@ def final_objection(operator, survivors, research, rounds, status):
         KILLER_MODEL,
         system,
         prompt,
-        420,
+        450,
         "FINAL OBJECTION",
         status,
         "none",
     )
 
 
-def final_verdict(operator, objection, survivors, insufficient_ids, status):
+def final_verdict(operator, objection, survivors, status):
     if not operator["winner_exists"]:
-        extra = ""
-        if insufficient_ids:
-            extra = (
-                "\n\nيوجد أيضاً أفكار لم تُقتل اقتصادياً لكنها بقيت تحت "
-                "INSUFFICIENT EVIDENCE: "
-                + ", ".join(insufficient_ids)
-                + ". لا تُعتبر Winners حتى يكتمل الدليل."
-            )
-
         return {
             "ok": True,
             "text": (
                 "## FINAL VERDICT\n\n"
                 "**KILL FOR NOW**\n\n"
-                f"{operator['winner_reason']}"
-                + extra
+                f"{operator['winner_reason']}\n\n"
+                "لا نبني مشروعاً فقط لأننا نريد الخروج بفكرة."
             ),
         }
 
     system = """
 أنت THE OPERATOR.
-اتخذ القرار النهائي: BUILD أو KILL.
+
+اتخذ القرار النهائي:
+BUILD أو KILL.
+
 راجع FINAL OBJECTION بجدية.
-لا تغير الدرجات عشوائياً.
+لا تغير الدرجة عشوائياً.
+لا تعتمد على ادعاء غير موثق كسبب قاتل.
 اكتب:
 - FINAL VERDICT
 - BUILD/KILL
@@ -1172,7 +1601,7 @@ def final_verdict(operator, objection, survivors, insufficient_ids, status):
         OPERATOR_MODEL,
         system,
         prompt,
-        560,
+        600,
         "FINAL VERDICT",
         status,
         "low",
@@ -1180,9 +1609,8 @@ def final_verdict(operator, objection, survivors, insufficient_ids, status):
 
 
 # =========================================================
-# DISPLAY
+# UI RENDERING
 # =========================================================
-
 
 def render_idea(idea):
     st.subheader(idea["name"])
@@ -1211,30 +1639,53 @@ def render_idea(idea):
 **العمل البشري:** {idea["human_work"]}
 
 **لماذا الآن؟** {idea["why_now"]}
+
+**Job-to-be-Done:** {idea["job_to_be_done"]}
+
+**المنافس المباشر يجب أن:** {idea["direct_competitor_definition"]}
+
+**ليس منافساً مباشراً:** {idea["not_a_direct_competitor"]}
 """
     )
 
 
 def render_gate(gate):
-    label = "✅ كافٍ" if gate["sufficient"] else "⚠️ غير كافٍ"
-    st.markdown(
-        f"**Research Gate:** {label} — {gate['score']}/{gate['max_score']}"
-    )
+    label = {
+        "SUFFICIENT": "✅ SUFFICIENT",
+        "INSUFFICIENT_EVIDENCE": "⚠️ INSUFFICIENT EVIDENCE",
+        "RESEARCH_FAILED": "❌ RESEARCH FAILED",
+    }[gate["status"]]
 
-    cols = st.columns(3)
-    checks = list(gate["checks"].items())
-    for i, (name, ok) in enumerate(checks):
-        with cols[i % 3]:
-            st.write(("✅ " if ok else "❌ ") + name)
+    st.markdown(
+        f"""
+**Research Status:** `{label}`
+
+**Gate Score:** {gate["score"]}/{gate["max_score"]}
+
+- 2+ Direct Competitors: {gate["checks"]["2_direct_competitors"]}
+- Pricing Evidence: {gate["checks"]["pricing_evidence"]}
+- WTP Evidence: {gate["checks"]["wtp_evidence"]}
+- Distribution Evidence: {gate["checks"]["distribution_evidence"]}
+- 3+ Relevant Domains: {gate["checks"]["3_relevant_domains"]}
+- Regulatory Evidence if needed: {gate["checks"]["regulatory_evidence_if_needed"]}
+"""
+    )
 
 
 # =========================================================
 # REPORT
 # =========================================================
 
-
-def build_report(ideas, blocked, research, rounds, operator, objection, verdict):
-    output = ["MD INVESTMENT RESEARCH COUNCIL — V7", "\nIDEAS"]
+def build_report(
+    ideas,
+    blocked,
+    research,
+    redteam,
+    operator,
+    objection,
+    verdict,
+):
+    output = ["MD INVESTMENT RESEARCH COUNCIL — V8", "\nIDEAS"]
 
     for idea in ideas:
         output += [
@@ -1246,48 +1697,71 @@ def build_report(ideas, blocked, research, rounds, operator, objection, verdict)
             f"Price: {idea['price']}",
             f"Distribution: {idea['distribution']}",
             f"Automation: {idea['automation']}%",
+            f"Job-to-be-Done: {idea['job_to_be_done']}",
         ]
 
     if blocked:
         output.append("\nBLOCKED IDEAS")
         for item in blocked:
-            output += [item["idea"]["name"], f"Reason: {item['reason']}"]
+            output += [
+                item["idea"]["name"],
+                f"Reason: {item['reason']}",
+            ]
 
-    output.append("\nPER-IDEA RESEARCH + RED TEAM")
+    output.append("\nPER-IDEA EVIDENCE + RED TEAM")
 
     for idea in ideas:
         idea_id = idea["id"]
-        result = research.get(idea_id, {})
-        round_data = rounds.get(idea_id, {})
+        r = research.get(idea_id, {})
 
         output += [
             f"\n===== {idea['name']} ({idea_id}) =====",
             "RESEARCH GATE:",
-            json.dumps(result.get("gate", {}), ensure_ascii=False, indent=2),
-            "WEB RESEARCH:",
-            result.get("text", ""),
-            "SOURCES:",
+            json.dumps(r.get("gate", {}), ensure_ascii=False, indent=2),
+            "\nEVIDENCE SOURCES:",
         ]
 
-        for source in result.get("sources", []):
-            output.append(f"- {source.get('title','')}: {source.get('url','')}")
+        for source in r.get("sources", []):
+            output += [
+                f"\n[{source.get('source_id','')}] {source.get('title','')}",
+                f"URL: {source.get('url','')}",
+                f"Query type: {source.get('query_type','')}",
+                f"Relevance: {source.get('evaluation',{}).get('relevance_score',0)}/100",
+                f"Categories: {source.get('evaluation',{}).get('categories',[])}",
+                f"Why relevant: {source.get('evaluation',{}).get('why_relevant','')}",
+                f"Snippet: {source.get('snippet','')}",
+                f"Excerpt: {source.get('page_excerpt','')}",
+            ]
 
-        output += [
-            "KILLER FIRST ATTACK:",
-            json.dumps(round_data.get("killer_first", {}), ensure_ascii=False, indent=2),
-            "HUNTER REBUTTAL:",
-            json.dumps(round_data.get("hunter_rebuttal", {}), ensure_ascii=False, indent=2),
-            "KILLER FINAL:",
-            json.dumps(round_data.get("killer_final", {}), ensure_ascii=False, indent=2),
-        ]
+        if idea_id in redteam:
+            output += [
+                "\nKILLER FIRST ATTACK:",
+                json.dumps(
+                    redteam[idea_id]["killer_first"],
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                "\nHUNTER REBUTTAL:",
+                json.dumps(
+                    redteam[idea_id]["hunter_rebuttal"],
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                "\nKILLER FINAL:",
+                json.dumps(
+                    redteam[idea_id]["killer_final"],
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            ]
 
     output += [
         "\nOPERATOR",
-        json.dumps(operator or {}, ensure_ascii=False, indent=2),
+        json.dumps(operator, ensure_ascii=False, indent=2),
         "\nFINAL OBJECTION",
-        objection or "",
+        objection,
         "\nFINAL VERDICT",
-        verdict or "",
+        verdict,
     ]
 
     return "\n".join(output)
@@ -1296,7 +1770,6 @@ def build_report(ideas, blocked, research, rounds, operator, objection, verdict)
 # =========================================================
 # PDF
 # =========================================================
-
 
 def find_font():
     paths = [
@@ -1310,7 +1783,10 @@ def find_font():
             return path
 
     for path in glob.glob("/usr/share/fonts/**/*.ttf", recursive=True):
-        if any(word in path.lower() for word in ["naskh", "arabic", "dejavusans"]):
+        if any(
+            word in path.lower()
+            for word in ["naskh", "arabic", "dejavusans"]
+        ):
             return path
 
     return None
@@ -1325,6 +1801,7 @@ def create_pdf(report):
     pdf.set_auto_page_break(True, 15)
     pdf.set_margins(15, 15, 15)
     pdf.add_page()
+
     pdf.add_font("Arabic", fname=font)
     pdf.set_font("Arabic", size=10)
 
@@ -1339,6 +1816,7 @@ def create_pdf(report):
         pass
 
     text = re.sub(r"#{1,6}\s*", "", report)
+
     emojis = [
         "🧠",
         "😈",
@@ -1358,6 +1836,7 @@ def create_pdf(report):
         "🌐",
         "📋",
         "📊",
+        "🔁",
     ]
 
     for emoji in emojis:
@@ -1390,7 +1869,7 @@ DEFAULT = {
     "ideas": None,
     "blocked": None,
     "research": None,
-    "rounds": None,
+    "redteam": None,
     "operator": None,
     "objection": None,
     "verdict": None,
@@ -1411,15 +1890,16 @@ st.caption(f"Build: {BUILD_ID}")
 
 st.info(
     """
-**V7**
+**V8 — Evidence First**
 
-كل فكرة الآن تحصل على جلسة مستقلة كاملة:
-
-Research → Killer → Hunter Rebuttal → Killer Final
-
-ولا يمكن للـOperator تقييم فكرة إلا إذا انتهت إلى `SURVIVES`.
-
-إذا البحث غير كافٍ، النتيجة تصبح `INSUFFICIENT EVIDENCE` بدلاً من قتل الفكرة لمجرد نقص البيانات.
+الجديد:
+- تعريف Job-to-be-Done لكل فكرة.
+- Relevance Judge لكل مصدر.
+- Research Gate يعتمد على جودة الأدلة لا عدد الروابط فقط.
+- إعادة بحث تلقائية إذا كانت فئات الأدلة ناقصة.
+- Killer يجب أن يربط الادعاءات الخطرة بـ Source IDs.
+- لا يسمح KILL IT بسبب ادعاء غير موثق.
+- حالات البحث: SUFFICIENT / INSUFFICIENT EVIDENCE / RESEARCH FAILED.
 """
 )
 
@@ -1430,7 +1910,7 @@ original = st.text_area(
 )
 
 start = st.button(
-    "🚀 ابدأ Research Council",
+    "🚀 ابدأ Evidence Research Council",
     type="primary",
     use_container_width=True,
 )
@@ -1449,138 +1929,124 @@ if start:
 
         st.session_state.original = original
         status = st.empty()
+
         case = prepare_case_brief(original)
 
-        # 1) HUNTER
-        status.info("🎯 THE HUNTER يولد 3 أفكار...")
+        # HUNTER
+        status.info("🎯 THE HUNTER يولد 3 أفكار مع Search Definitions...")
         result = run_hunter(case, status)
 
         if not result["ok"]:
             st.session_state.error = result["error"]
+
         else:
             ideas, blocked = filter_ideas(result["data"])
             st.session_state.ideas = ideas
             st.session_state.blocked = blocked
 
             if not ideas:
-                st.session_state.operator = {
-                    "evaluations": [],
-                    "winner_exists": False,
-                    "winner_idea_id": "",
-                    "winner_reason": "كل الأفكار سقطت في فلتر المرفوضات.",
-                }
-                st.session_state.objection = "لا توجد فكرة ناجية."
                 st.session_state.verdict = (
-                    "## FINAL VERDICT\n\n**KILL FOR NOW**\n\n"
-                    "كل الأفكار التي ولدها Hunter تشبه أفكاراً مرفوضة مسبقاً."
+                    "## FINAL VERDICT\n\n"
+                    "**KILL**\n\n"
+                    "كل الأفكار تشبه أفكاراً مرفوضة مسبقاً."
                 )
                 status.error("❌ لا توجد فكرة بعد الفلتر.")
+
             else:
-                research = {}
-                rounds = {}
-                fatal_error = None
-
-                # 2) EACH IDEA GETS A FULL ROUND
-                for index, idea in enumerate(ideas, 1):
-                    idea_id = idea["id"]
-
-                    status.info(
-                        f"🌐 الفكرة {index}/{len(ideas)} — Web Research: {idea['name']}"
-                    )
-                    research_result = research_idea(idea, status)
-                    research[idea_id] = research_result
-
-                    # البحث إذا فشل تماماً لا يوقف البرنامج؛ البوابة ستعتبره غير كافٍ.
-                    if not research_result["ok"]:
-                        research_result["gate"]["sufficient"] = False
-
-                    status.info(
-                        f"🔪 الفكرة {index}/{len(ideas)} — Killer First Attack"
-                    )
-                    killer_first_result = run_killer_one(
-                        idea, research_result, status
-                    )
-                    if not killer_first_result["ok"]:
-                        fatal_error = (
-                            f"Killer First Attack failed for {idea_id}:\n\n"
-                            + killer_first_result["error"]
-                        )
-                        break
-
-                    killer_first = killer_first_result["data"]
-
-                    status.info(
-                        f"🎯 الفكرة {index}/{len(ideas)} — Hunter Rebuttal"
-                    )
-                    rebuttal_result = run_rebuttal_one(
-                        idea, research_result, killer_first, status
-                    )
-                    if not rebuttal_result["ok"]:
-                        fatal_error = (
-                            f"Hunter Rebuttal failed for {idea_id}:\n\n"
-                            + rebuttal_result["error"]
-                        )
-                        break
-
-                    rebuttal = rebuttal_result["data"]
-
-                    status.info(
-                        f"🔪 الفكرة {index}/{len(ideas)} — Killer Final"
-                    )
-                    killer_final_result = run_killer_final_one(
-                        idea,
-                        research_result,
-                        killer_first,
-                        rebuttal,
-                        status,
-                    )
-                    if not killer_final_result["ok"]:
-                        fatal_error = (
-                            f"Killer Final failed for {idea_id}:\n\n"
-                            + killer_final_result["error"]
-                        )
-                        break
-
-                    rounds[idea_id] = {
-                        "killer_first": killer_first,
-                        "hunter_rebuttal": rebuttal,
-                        "killer_final": killer_final_result["data"],
-                    }
-
+                # RESEARCH
+                status.info("🌐 Evidence Research + Relevance Scoring...")
+                research = research_all(ideas, status)
                 st.session_state.research = research
-                st.session_state.rounds = rounds
 
-                if fatal_error:
-                    st.session_state.error = fatal_error
+                # RED TEAM
+                status.info("⚔️ بدء Red Team مستقل لكل فكرة...")
+                redteam_result = red_team_all(
+                    ideas,
+                    research,
+                    status,
+                )
+
+                if not redteam_result["ok"]:
+                    st.session_state.error = redteam_result["error"]
+                    st.session_state.redteam = redteam_result["data"]
+
                 else:
+                    redteam = redteam_result["data"]
+                    st.session_state.redteam = redteam
+
                     survivor_ids = [
                         idea_id
-                        for idea_id, data in rounds.items()
-                        if data["killer_final"]["decision"] == "SURVIVES"
-                    ]
-
-                    insufficient_ids = [
-                        idea_id
-                        for idea_id, data in rounds.items()
-                        if data["killer_final"]["decision"]
-                        == "INSUFFICIENT EVIDENCE"
+                        for idea_id, pack in redteam.items()
+                        if pack["killer_final"]["decision"] == "SURVIVES"
                     ]
 
                     survivors = [
-                        idea for idea in ideas if idea["id"] in survivor_ids
+                        idea
+                        for idea in ideas
+                        if idea["id"] in survivor_ids
                     ]
 
-                    # 3) OPERATOR ONLY SEES SURVIVORS
-                    if survivors:
-                        status.info("📊 THE OPERATOR يحسب الاقتصاديات...")
-                        operator_result = run_operator(
-                            survivors, research, rounds, status
+                    unresolved = [
+                        idea_id
+                        for idea_id, pack in redteam.items()
+                        if pack["killer_final"]["decision"]
+                        in [
+                            "INSUFFICIENT EVIDENCE",
+                            "RESEARCH FAILED",
+                        ]
+                    ]
+
+                    if not survivors:
+                        st.session_state.operator = {
+                            "evaluations": [],
+                            "winner_exists": False,
+                            "winner_idea_id": "",
+                            "winner_reason": (
+                                "لا توجد فكرة ناجية."
+                                + (
+                                    " توجد أفكار تحتاج بحثاً إضافياً: "
+                                    + ", ".join(unresolved)
+                                    if unresolved
+                                    else ""
+                                )
+                            ),
+                        }
+
+                        st.session_state.objection = (
+                            "لا يوجد Winner يمكن الاعتراض على اختياره."
                         )
 
-                        if not operator_result["ok"]:
-                            st.session_state.error = operator_result["error"]
+                        if unresolved:
+                            st.session_state.verdict = (
+                                "## FINAL VERDICT\n\n"
+                                "**KILL FOR NOW**\n\n"
+                                "لا توجد فكرة نجت إلى Operator.\n\n"
+                                "غير محسومة بسبب نقص/فشل البحث: "
+                                + ", ".join(unresolved)
+                            )
                         else:
-                            operator = recalc_operator(operator_result["data"])
+                            st.session_state.verdict = (
+                                "## FINAL VERDICT\n\n"
+                                "**KILL**\n\n"
+                                "جميع الأفكار قُتلت بأدلة موثقة."
+                            )
+
+                        status.success("✅ انتهى المجلس: NO WINNER")
+
+                    else:
+                        status.info("📊 THE OPERATOR يقيّم الناجين فقط...")
+                        op_result = run_operator(
+                            survivors,
+                            research,
+                            redteam,
+                            status,
+                        )
+
+                        if not op_result["ok"]:
+                            st.session_state.error = op_result["error"]
+
+                        else:
+                            operator = op_result["data"]
                             st.session_state.operator = operator
 
                             status.info("🔪 FINAL OBJECTION...")
@@ -1588,12 +2054,12 @@ if start:
                                 operator,
                                 survivors,
                                 research,
-                                rounds,
                                 status,
                             )
 
                             if not objection_result["ok"]:
                                 st.session_state.error = objection_result["error"]
+
                             else:
                                 objection = objection_result["text"]
                                 st.session_state.objection = objection
@@ -1603,45 +2069,15 @@ if start:
                                     operator,
                                     objection,
                                     survivors,
-                                    insufficient_ids,
                                     status,
                                 )
 
                                 if not verdict_result["ok"]:
                                     st.session_state.error = verdict_result["error"]
+
                                 else:
                                     st.session_state.verdict = verdict_result["text"]
-                                    status.success("✅ انتهى Research Council")
-                    else:
-                        # لا يوجد Survivor: لا نستخدم Operator ليخترع تقييماً.
-                        st.session_state.operator = {
-                            "evaluations": [],
-                            "winner_exists": False,
-                            "winner_idea_id": "",
-                            "winner_reason": (
-                                "لم تنج أي فكرة إلى مرحلة Operator."
-                                if not insufficient_ids
-                                else "لا توجد فكرة ناجية، وتوجد أفكار تحتاج أدلة إضافية."
-                            ),
-                        }
-                        st.session_state.objection = (
-                            "لا يوجد Winner يمكن الاعتراض على اختياره."
-                        )
-
-                        extra = ""
-                        if insufficient_ids:
-                            extra = (
-                                "\n\nINSUFFICIENT EVIDENCE: "
-                                + ", ".join(insufficient_ids)
-                                + ". هذه ليست Winners ولا تُعتبر ميتة اقتصادياً حتى يكتمل البحث."
-                            )
-
-                        st.session_state.verdict = (
-                            "## FINAL VERDICT\n\n**KILL FOR NOW**\n\n"
-                            "لا توجد فكرة نجت من Red Team إلى مرحلة Operator."
-                            + extra
-                        )
-                        status.success("✅ انتهى المجلس: NO WINNER")
+                                    status.success("✅ انتهى Evidence Research Council")
 
 
 # =========================================================
@@ -1656,7 +2092,7 @@ if st.session_state.error:
 
 
 # =========================================================
-# BLOCKED IDEAS
+# BLOCKED
 # =========================================================
 
 if st.session_state.blocked:
@@ -1664,11 +2100,14 @@ if st.session_state.blocked:
     st.header("🚫 أفكار أسقطها الفلتر")
 
     for item in st.session_state.blocked:
-        st.warning(f"**{item['idea']['name']}**\n\n{item['reason']}")
+        st.warning(
+            f"**{item['idea']['name']}**\n\n"
+            f"{item['reason']}"
+        )
 
 
 # =========================================================
-# IDEAS + PER-IDEA ROUNDS
+# IDEAS
 # =========================================================
 
 if st.session_state.ideas:
@@ -1680,45 +2119,77 @@ if st.session_state.ideas:
             render_idea(idea)
 
 
+# =========================================================
+# RESEARCH
+# =========================================================
+
 if st.session_state.research:
     st.divider()
-    st.header("🌐 Research + Red Team لكل فكرة")
+    st.header("🌐 Evidence Research")
+
+    for idea in st.session_state.ideas or []:
+        result = st.session_state.research.get(idea["id"], {})
+
+        with st.expander(
+            f"🔎 {idea['name']} — {result.get('research_status','')}",
+            expanded=False,
+        ):
+            if result.get("gate"):
+                render_gate(result["gate"])
+
+            st.markdown("### الأدلة")
+
+            for source in result.get("sources", []):
+                ev = source.get("evaluation", {})
+                score = ev.get("relevance_score", 0)
+                categories = ", ".join(ev.get("categories", []))
+
+                st.markdown(
+                    f"""
+**[{source.get("source_id","")}] {source.get("title","")}**
+
+- Relevance: **{score}/100**
+- Categories: `{categories}`
+- Same JTBD: `{ev.get("same_job_to_be_done", False)}`
+- Authoritative: `{ev.get("authoritative", False)}`
+- Why relevant: {ev.get("why_relevant","")}
+- Query type: `{source.get("query_type","")}`
+- URL: {source.get("url","")}
+"""
+                )
+
+                if source.get("snippet"):
+                    st.caption(source["snippet"])
+
+
+# =========================================================
+# RED TEAM
+# =========================================================
+
+if st.session_state.redteam:
+    st.divider()
+    st.header("⚔️ Per-Idea Red Team")
 
     for idea in st.session_state.ideas or []:
         idea_id = idea["id"]
-        research = st.session_state.research.get(idea_id, {})
-        round_data = (st.session_state.rounds or {}).get(idea_id, {})
 
-        with st.expander(f"🧪 {idea['name']} — {idea_id}", expanded=False):
-            gate = research.get("gate")
-            if gate:
-                render_gate(gate)
+        if idea_id not in st.session_state.redteam:
+            continue
 
-            st.markdown("### 🔎 Web Research")
-            if research.get("text"):
-                st.code(research["text"], language="text")
-            else:
-                st.warning("لا يوجد Research Packet كافٍ لهذه الفكرة.")
+        pack = st.session_state.redteam[idea_id]
 
-            if research.get("sources"):
-                st.markdown("### المصادر")
-                for source in research["sources"]:
-                    title = source.get("title") or source.get("url")
-                    st.markdown(f"- [{title}]({source.get('url','')})")
+        with st.expander(
+            f"{idea['name']} — {pack['killer_final']['decision']}",
+            expanded=True,
+        ):
+            st.markdown("### 🔪 KILLER FIRST")
+            st.json(pack["killer_first"])
 
-            if round_data:
-                killer_first = round_data["killer_first"]
-                rebuttal = round_data["hunter_rebuttal"]
-                killer_final = round_data["killer_final"]
+            st.markdown("### 🎯 HUNTER REBUTTAL")
+            st.json(pack["hunter_rebuttal"])
 
-                st.markdown("### 🔪 Killer First Attack")
-                st.json(killer_first)
-
-                st.markdown("### 🎯 Hunter Rebuttal")
-                st.json(rebuttal)
-
-                st.markdown("### 🔪 Killer Final")
-                st.json(killer_final)
+            st.markdown("### 🔪 KILLER FINAL")
+            st.json(pack["killer_final"])
 
 
 # =========================================================
@@ -1734,6 +2205,7 @@ if st.session_state.operator:
 
     if evaluations:
         table = []
+
         for item in evaluations:
             table.append(
                 {
@@ -1747,7 +2219,11 @@ if st.session_state.operator:
                 }
             )
 
-        st.dataframe(table, use_container_width=True, hide_index=True)
+        st.dataframe(
+            table,
+            use_container_width=True,
+            hide_index=True,
+        )
 
         for item in evaluations:
             with st.expander(
@@ -1788,15 +2264,21 @@ if st.session_state.operator:
 **$10k MRR:** {item["customers_for_10k_mrr"]}
 
 **Truth Test:** {item["truth_test"]}
+
+**Evidence Quality:** {item["evidence_quality_note"]}
 """
                 )
 
     if operator.get("winner_exists"):
         st.success(
-            f"WINNER: {operator['winner_idea_id']}\n\n{operator['winner_reason']}"
+            f"WINNER: {operator['winner_idea_id']}\n\n"
+            f"{operator['winner_reason']}"
         )
     else:
-        st.warning("NO WINNER\n\n" + operator.get("winner_reason", ""))
+        st.warning(
+            "NO WINNER\n\n"
+            + operator.get("winner_reason", "")
+        )
 
 
 # =========================================================
@@ -1818,7 +2300,7 @@ if st.session_state.verdict:
         st.session_state.ideas or [],
         st.session_state.blocked or [],
         st.session_state.research or {},
-        st.session_state.rounds or {},
+        st.session_state.redteam or {},
         st.session_state.operator or {},
         st.session_state.objection or "",
         st.session_state.verdict or "",
@@ -1830,7 +2312,7 @@ if st.session_state.verdict:
     st.download_button(
         "📝 تحميل التقرير TXT",
         report.encode("utf-8"),
-        "MD_Investment_Research_V7.txt",
+        "MD_Investment_Research_V8.txt",
         "text/plain",
         use_container_width=True,
     )
@@ -1839,7 +2321,7 @@ if st.session_state.verdict:
         st.download_button(
             "📄 تحميل التقرير PDF",
             create_pdf(report),
-            "MD_Investment_Research_V7.pdf",
+            "MD_Investment_Research_V8.pdf",
             "application/pdf",
             use_container_width=True,
         )
