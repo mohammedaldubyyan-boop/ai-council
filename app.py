@@ -13,11 +13,11 @@ from fpdf import FPDF
 # BUILD
 # =========================================================
 
-BUILD_ID = "GROQ-DEBATE-3"
+BUILD_ID = "GROQ-DEBATE-4-NO-COMPOUND"
 
 
 # =========================================================
-# STREAMLIT
+# PAGE
 # =========================================================
 
 st.set_page_config(
@@ -28,13 +28,12 @@ st.set_page_config(
 
 
 # =========================================================
-# RTL
+# ARABIC RTL
 # =========================================================
 
 st.markdown(
     """
     <style>
-
     .stApp {
         direction: rtl;
     }
@@ -57,7 +56,6 @@ st.markdown(
         direction: rtl !important;
         text-align: right !important;
     }
-
     </style>
     """,
     unsafe_allow_html=True
@@ -65,7 +63,7 @@ st.markdown(
 
 
 # =========================================================
-# GROQ CLIENT
+# GROQ
 # =========================================================
 
 client = OpenAI(
@@ -78,34 +76,17 @@ client = OpenAI(
 
 # =========================================================
 # MODELS
-#
-# 3 أعضاء حقيقيين:
-#
-# Hunter   = GPT OSS 120B
-# Killer   = Qwen 3.8 27B
-# Operator = Qwen 3.6 27B
-#
-# Compound Mini ليس عضواً.
-# نستخدمه فقط لضغط الـ prompt الطويل.
 # =========================================================
-
-COMPRESSOR_MODEL = {
-    "id": "groq/compound-mini",
-    "reasoning": None
-}
-
 
 HUNTER_MODEL = {
     "id": "openai/gpt-oss-120b",
     "reasoning": "low"
 }
 
-
 KILLER_MODEL = {
     "id": "qwen/qwen3.8-27b",
     "reasoning": "none"
 }
-
 
 OPERATOR_MODEL = {
     "id": "qwen/qwen3.6-27b",
@@ -114,104 +95,237 @@ OPERATOR_MODEL = {
 
 
 # =========================================================
-# SYSTEM PROMPTS
+# FREE TIER THROTTLING
+#
+# نفس الموديل لا نعيد استخدامه فوراً
 # =========================================================
 
-HUNTER_SYSTEM = """
+MODEL_LAST_USED = {}
+
+MIN_SECONDS_BETWEEN_SAME_MODEL = 28
+
+
+# =========================================================
+# HUNTER INSTRUCTIONS
+# =========================================================
+
+HUNTER_INSTRUCTIONS = """
 أنت THE HUNTER.
 
 أنت رائد أعمال وباحث فرص اقتصادية.
 
-مهمتك البحث عن أماكن تتحرك فيها الأموال فعلياً.
+الهدف ليس العثور على فكرة AI مثيرة.
+الهدف العثور على مشروع يمكن أن يولد مالاً حقيقياً
+بأقل اعتماد ممكن على صاحبه.
 
-لا تحاول إبهار المستخدم بفكرة AI.
+الأولوية هي:
 
-الأولوية:
-- ألم مالي حقيقي
-- willingness to pay
-- سرعة الوصول لأول عملية دفع
-- سهولة التوزيع
-- الأتمتة
-- اقتصاديات الوحدة
-- تقليل تدخل صاحب المشروع
+1. مشكلة تكلف العميل مالاً.
+2. willingness-to-pay واضح.
+3. عملية إلزامية أو متكررة.
+4. وصول واضح للمشتري.
+5. أتمتة عالية.
+6. سرعة الوصول لأول عملية دفع.
+7. أقل مصروف قبل إثبات الدفع.
+8. عدم الحاجة لفريق في البداية.
+9. عدم الحاجة لجمهور كبير.
+10. عدم بناء شيء لأشهر قبل اختبار الدفع.
 
-التزم بقيود المستخدم حرفياً.
+لا تعتبر AI ميزة تنافسية بحد ذاته.
 
-لا تعيد الأفكار التي رفضها المستخدم
-إلا إذا كان التغيير الاقتصادي جوهرياً ويمكن إثباته.
+تجنب:
+- AI wrappers.
+- dashboards العامة.
+- أدوات يمكن لـChatGPT العادي تنفيذها بما يكفي.
+- micro-SaaS بلا سبب قوي للدفع.
+- أفكار تحتاج مبيعات بشرية ثقيلة.
+- أفكار تحتاج دعماً يومياً من صاحب المشروع.
 
 قدم بحد أقصى 5 أفكار.
 
-كن قاسياً وواقعياً.
+لكل فكرة يجب أن تذكر باختصار:
 
-لا تستخدم لغة تحفيزية.
+1. من يدفع؟
+2. لماذا يدفع؟
+3. كم يدفع تقريباً؟
+4. ماذا يحدث اليوم بدون المنتج؟
+5. البديل الحالي؟
+6. لماذا نحن أفضل؟
+7. كيف نصل لأول 10 عملاء؟
+8. ماذا يمكن أتمتته؟
+9. العمل البشري المتبقي؟
+10. لماذا الآن؟
+
+لا تختر WINNER.
+
+لا تقم بتقييم 100 نقطة بعد.
+
+مهم:
+كن كثيفاً ومباشراً.
+لا تتجاوز تقريباً 900 كلمة.
 """
 
 
-KILLER_SYSTEM = """
+# =========================================================
+# KILLER INSTRUCTIONS
+# =========================================================
+
+KILLER_INSTRUCTIONS = """
 أنت THE KILLER.
 
-أنت مستثمر متشائم ومنافس يريد منعنا
-من خسارة الوقت والمال.
+أنت مستثمر متشائم ومدير منافس.
+هدفك منعنا من بناء المشروع الخطأ.
 
 لا تقترح أفكاراً جديدة.
 
-مهمتك مهاجمة ما يقدمه THE HUNTER.
+هاجم أفكار Hunter من ناحية:
 
-ابحث عن:
-- المنافسين
-- البدائل المجانية
-- إمكانية استبداله بـ ChatGPT
-- ضعف willingness to pay
-- CAC
-- churn
-- platform risk
-- regulatory risk
-- security
-- privacy
-- liability
-- ضعف moat
-- سهولة التقليد
-- الحاجة لمبيعات بشرية
-- عدم تكرار الاستخدام
-- كون الفكرة Feature وليست Company
+- المنافسون المباشرون.
+- المنتجات المجانية.
+- الحلول الموجودة داخل المنصة نفسها.
+- هل ChatGPT/Claude يستطيع أداء المهمة بما يكفي؟
+- CAC.
+- willingness-to-pay.
+- churn.
+- صعوبة الوصول للمشتري.
+- legal/regulatory risk.
+- data availability.
+- platform/API dependency.
+- privacy/security.
+- liability.
+- support burden.
+- هل هي Feature وليست Company؟
+- سهولة التقليد.
+- ضعف moat.
+- الحاجة لمبيعات بشرية.
+- الحاجة لخبرة غير موجودة.
+- صغر السوق.
+- ضعف التكرار.
+
+لكل فكرة أعط:
+
+1. أقوى 3 أسباب للفشل.
+2. Kill Shot واحد.
+3. ما الدليل الذي لو وجدناه نرفضها فوراً؟
+4. تقييم من 10 بعد الهجوم.
+
+إذا ماتت الفكرة اكتب بوضوح:
+
+KILL IT
 
 ممنوع المجاملة.
-
-إذا الفكرة سيئة قل KILL IT.
 """
 
 
-OPERATOR_SYSTEM = """
+# =========================================================
+# OPERATOR INSTRUCTIONS
+# =========================================================
+
+OPERATOR_INSTRUCTIONS = """
 أنت THE OPERATOR / ECONOMIST.
 
 أنت CTO + CFO + Growth Operator.
 
-وظيفتك ليست توليد أفكار جديدة.
+وظيفتك الحكم فقط على الأفكار التي نجت.
 
-وظيفتك الحكم على الأفكار التي نجت
-من Hunter وKiller.
+لا تولد أفكاراً جديدة.
 
-ركز على:
-- Economics
-- Pricing
-- CAC
-- LTV
-- Gross Margin
-- Recurring Revenue
-- Speed to Revenue
-- Build Complexity
-- Automation
-- Distribution
-- First Paying Customer
-- Stack Fit
+نظام التقييم من 100:
 
-لا ترفع الدرجات لتحقيق شرط 85.
+1. Severity of Problem — 15
+2. Willingness to Pay — 15
+3. Distribution — 15
+4. Automation — 15
+5. Recurring / Repeat Usage — 10
+6. Competition — 10
+7. Moat / Defensibility — 5
+8. Speed to Revenue — 10
+9. Stack Fit — 5
 
-إذا أفضل فكرة 74/100 قل 74.
+المجموع = 100.
 
-إذا لم توجد فكرة تستحق البناء
-قل بوضوح لا توجد فكرة تستحق البناء الآن.
+لا ترفع الدرجة بسبب:
+- TAM كبير.
+- AI ترند.
+- سهولة البرمجة.
+- وجود API.
+- وجود منافسين مربحين فقط.
+
+WINNER ممنوع إلا إذا تجاوز 85/100 فعلاً بعد Red Team.
+
+إذا أفضل فكرة حصلت على 78:
+قل 78.
+
+إذا لا توجد فكرة تستحق 85:
+قل NO WINNER.
+
+لكل فكرة نجت قيّم:
+
+ECONOMICS:
+- Price.
+- Gross margin.
+- recurring revenue.
+- LTV.
+- CAC.
+- عدد العملاء المطلوب لـ:
+  $1k MRR
+  $5k MRR
+  $10k MRR
+
+BUILD:
+- ماذا نبني؟
+- ماذا نربط؟
+- ماذا لا نحتاج بناءه؟
+- تكلفة التشغيل.
+- هل MVP خلال أيام؟
+
+AUTOMATION:
+- نسبة الأتمتة %.
+- أين يحتاج تدخل محمد؟
+
+DISTRIBUTION:
+لا تقبل إجابات عامة مثل:
+SEO
+social media
+content
+ads
+
+يجب تحديد قناة واضحة للوصول لأول عميل يدفع.
+
+اختبار الحقيقة لكل فكرة 80+:
+
+1. لماذا ليست Micro-SaaS سيموت عند $0 MRR؟
+2. لماذا يعطي عميل غريب بطاقته لنا؟
+3. لماذا لا يستخدم البديل الموجود؟
+4. لماذا يحتاجها الآن؟
+5. أقصر طريق لأول payment_succeeded؟
+
+الجدول النهائي:
+
+| Rank | Idea | Score | First Buyer | Price | Automation | Fastest Test | Biggest Risk |
+
+إذا يوجد WINNER فوق 85، أعط:
+
+1. الجملة الواحدة التي تشرح المشروع.
+2. العميل المحدد جداً.
+3. المشكلة المالية.
+4. لماذا الآن.
+5. المنتج.
+6. كيف يدخل المال.
+7. السعر الأولي.
+8. acquisition channel.
+9. automation architecture.
+10. دور DeepSeek.
+11. دور Replit.
+12. دور Stripe.
+13. دور Composio إن احتجناه.
+14. العمل المتبقي على محمد.
+15. المنافسون المباشرون.
+16. لماذا لا يقتلوننا.
+17. Kill Shot.
+18. اختبار 7 أيام.
+19. معيار BUILD.
+20. معيار KILL.
 
 لا تستخدم لغة تحفيزية.
 """
@@ -231,38 +345,133 @@ def extract_content(content):
 
     if isinstance(content, list):
 
-        parts = []
+        pieces = []
 
-        for item in content:
+        for part in content:
 
-            if isinstance(item, str):
-                parts.append(item)
+            if isinstance(part, str):
+                pieces.append(part)
 
-            elif isinstance(item, dict):
+            elif isinstance(part, dict):
 
-                text = item.get("text")
+                text = part.get("text")
 
                 if text:
-                    parts.append(str(text))
+                    pieces.append(str(text))
 
             else:
 
-                text = getattr(
-                    item,
-                    "text",
-                    None
-                )
+                text = getattr(part, "text", None)
 
                 if text:
-                    parts.append(str(text))
+                    pieces.append(str(text))
 
-        return "\n".join(parts).strip()
+        return "\n".join(pieces).strip()
 
     return str(content).strip()
 
 
 # =========================================================
-# استخراج وقت الانتظار من Groq 429
+# LOCAL BRIEF PREPARATION
+#
+# لا نستخدم AI هنا.
+#
+# إذا المستخدم لصق البرومبت القديم،
+# نحذف قسم الوكلاء لأن التطبيق يحتوي عليه أصلاً.
+# =========================================================
+
+def prepare_case_brief(text):
+
+    text = text.strip()
+
+    original_length = len(text)
+
+    markers = [
+        "\n# الوكلاء",
+        "\n## الوكيل الأول",
+        "\n# قواعد المناظرة",
+        "\n# نظام التقييم",
+        "\n# شرط النجاح",
+        "\n# اختبار الحقيقة",
+        "\n# المرحلة النهائية"
+    ]
+
+    cut_positions = []
+
+    for marker in markers:
+
+        position = text.find(marker)
+
+        if position != -1:
+            cut_positions.append(position)
+
+    removed_protocol = False
+
+    if cut_positions:
+
+        first_cut = min(cut_positions)
+
+        text = text[:first_cut]
+
+        removed_protocol = True
+
+
+    # إزالة فراغات مبالغ فيها
+    text = re.sub(
+        r"\n{4,}",
+        "\n\n\n",
+        text
+    )
+
+
+    # حد أمان
+    MAX_CHARS = 14000
+
+    trimmed = False
+
+    if len(text) > MAX_CHARS:
+
+        # نحافظ على البداية والنهاية
+        text = (
+            text[:10500]
+            + "\n\n[تم اختصار جزء من النص تلقائياً]\n\n"
+            + text[-3000:]
+        )
+
+        trimmed = True
+
+
+    return {
+        "text": text,
+        "removed_protocol": removed_protocol,
+        "trimmed": trimmed,
+        "original_length": original_length,
+        "final_length": len(text)
+    }
+
+
+# =========================================================
+# TRUNCATE BETWEEN AGENTS
+# =========================================================
+
+def compact_text(text, max_chars):
+
+    if not text:
+        return ""
+
+    text = text.strip()
+
+    if len(text) <= max_chars:
+        return text
+
+    return (
+        text[:max_chars]
+        + "\n\n[تم اختصار بقية الرد لتقليل استهلاك الـtokens]"
+    )
+
+
+# =========================================================
+# RATE LIMIT PARSER
 # =========================================================
 
 def get_retry_seconds(error_text):
@@ -290,32 +499,66 @@ def get_retry_seconds(error_text):
                 )
 
                 return max(
-                    2,
-                    math.ceil(seconds) + 2
+                    3,
+                    math.ceil(seconds) + 3
                 )
 
             except:
                 pass
 
-    return 10
+    return 12
+
+
+# =========================================================
+# COOLDOWN FOR SAME MODEL
+# =========================================================
+
+def wait_for_model(
+    model,
+    stage_name,
+    status_box
+):
+
+    previous = MODEL_LAST_USED.get(model)
+
+    if previous is None:
+        return
+
+    elapsed = time.time() - previous
+
+    remaining = (
+        MIN_SECONDS_BETWEEN_SAME_MODEL
+        - elapsed
+    )
+
+    if remaining > 0:
+
+        wait_seconds = math.ceil(
+            remaining
+        )
+
+        status_box.warning(
+            f"⏳ {stage_name}: "
+            f"انتظار {wait_seconds} ثانية "
+            f"لحماية الحد المجاني لـGroq..."
+        )
+
+        time.sleep(
+            wait_seconds
+        )
 
 
 # =========================================================
 # MODEL CALL
-#
-# أهم تعديل:
-# إذا Groq قال انتظر 39 ثانية،
-# ما نعيد بعد 5 ثواني.
-# ننتظر الوقت الحقيقي.
 # =========================================================
 
 def call_model(
     model_config,
-    system_prompt,
-    user_prompt,
+    instructions,
+    task,
     max_tokens,
     stage_name,
-    status_box=None,
+    status_box,
     retries=4
 ):
 
@@ -325,12 +568,33 @@ def call_model(
         "reasoning"
     )
 
+
+    wait_for_model(
+        model,
+        stage_name,
+        status_box
+    )
+
+
     errors = []
 
 
     for attempt in range(retries):
 
         try:
+
+            full_prompt = f"""
+ROLE / RULES:
+
+{instructions}
+
+====================================
+
+CURRENT TASK:
+
+{task}
+"""
+
 
             extra_body = {}
 
@@ -350,20 +614,18 @@ def call_model(
 
                 "model": model,
 
+                # Groq ينصح بتبسيط الـprompt،
+                # لذلك نجمع الدور والمهمة في رسالة واحدة.
                 "messages": [
                     {
-                        "role": "system",
-                        "content": system_prompt
-                    },
-                    {
                         "role": "user",
-                        "content": user_prompt
+                        "content": full_prompt
                     }
                 ],
 
                 "max_completion_tokens": max_tokens,
 
-                "temperature": 0.4
+                "temperature": 0.5
             }
 
 
@@ -385,7 +647,7 @@ def call_model(
             if not response.choices:
 
                 errors.append(
-                    f"{model}: no choices"
+                    f"{model}: no choices returned"
                 )
 
                 continue
@@ -393,9 +655,22 @@ def call_model(
 
             choice = response.choices[0]
 
+
             content = extract_content(
                 choice.message.content
             )
+
+
+            finish_reason = getattr(
+                choice,
+                "finish_reason",
+                None
+            )
+
+
+            MODEL_LAST_USED[
+                model
+            ] = time.time()
 
 
             if content:
@@ -404,15 +679,9 @@ def call_model(
                     "ok": True,
                     "text": content,
                     "model": model,
+                    "finish_reason": finish_reason,
                     "error": None
                 }
-
-
-            finish_reason = getattr(
-                choice,
-                "finish_reason",
-                None
-            )
 
 
             errors.append(
@@ -430,10 +699,7 @@ def call_model(
             )
 
 
-            # ==========================================
-            # RATE LIMIT
-            # ==========================================
-
+            # 429
             if (
                 "429" in error_text
                 or "rate_limit" in error_text.lower()
@@ -443,16 +709,12 @@ def call_model(
                     error_text
                 )
 
-
-                if status_box:
-
-                    status_box.warning(
-                        f"⏳ {stage_name}: "
-                        f"وصلنا حد Groq المجاني. "
-                        f"انتظار {wait_seconds} ثانية "
-                        f"ثم نكمل تلقائياً..."
-                    )
-
+                status_box.warning(
+                    f"⏳ {stage_name}: "
+                    f"Groq طلب انتظار "
+                    f"{wait_seconds} ثانية. "
+                    f"سيكمل التطبيق تلقائياً..."
+                )
 
                 time.sleep(
                     wait_seconds
@@ -461,7 +723,25 @@ def call_model(
                 continue
 
 
-            # خطأ عادي
+            # 413
+            if (
+                "413" in error_text
+                or "request_too_large" in error_text.lower()
+            ):
+
+                return {
+                    "ok": False,
+                    "text": "",
+                    "model": model,
+                    "error": (
+                        "الطلب أكبر من المسموح. "
+                        "هذا يعني أن إحدى مراحل "
+                        "التطبيق أرسلت سياقاً كبيراً جداً.\n\n"
+                        + error_text
+                    )
+                }
+
+
             time.sleep(2)
 
 
@@ -474,593 +754,386 @@ def call_model(
 
 
 # =========================================================
-# 0 - ضغط الـ Brief
-#
-# هذه أهم خطوة لتجنب 8000 TPM.
-#
-# الـ prompt الضخم يذهب مرة واحدة إلى Compound Mini.
-# ثم المجلس يتعامل مع نسخة مركزة.
-# =========================================================
-
-def compress_brief(
-    original_prompt,
-    status_box
-):
-
-    system = """
-أنت لست مستشاراً ولا تحاول حل السؤال.
-
-وظيفتك فقط ضغط تعليمات المستخدم
-إلى INVESTMENT BRIEF كثيف ودقيق.
-
-ممنوع حذف العناصر المهمة.
-
-يجب أن تحافظ على:
-
-1. الهدف النهائي.
-2. الأشياء الممنوعة.
-3. الأصول الموجودة.
-4. قائمة الأفكار المرفوضة.
-5. تعريف Hunter.
-6. تعريف Killer.
-7. تعريف Operator.
-8. قواعد المناظرة.
-9. نظام التقييم وجميع الأوزان.
-10. شرط 85/100.
-11. اختبار الحقيقة.
-12. صيغة المخرجات النهائية.
-13. كل الأرقام والأسعار والشروط المهمة.
-
-لا تحل المشكلة.
-
-لا تقترح فكرة.
-
-لا تقيّم.
-
-فقط حوّل النص إلى brief منظم ومضغوط
-يستطيع ثلاثة وكلاء استخدامه دون الحاجة
-للنص الأصلي.
-
-كن كثيفاً جداً.
-"""
-
-
-    prompt = f"""
-حوّل النص التالي إلى Investment Brief
-مع الحفاظ على كل القيود المهمة:
-
-================ ORIGINAL ================
-
-{original_prompt}
-
-================ END ====================
-"""
-
-
-    return call_model(
-        COMPRESSOR_MODEL,
-        system,
-        prompt,
-        max_tokens=1300,
-        stage_name="تجهيز الـ Investment Brief",
-        status_box=status_box
-    )
-
-
-# =========================================================
-# 1 - HUNTER
+# 1. HUNTER
 # =========================================================
 
 def hunter_generate(
-    brief,
-    status_box
+    case_brief,
+    status
 ):
 
-    prompt = f"""
-هذا هو Investment Brief:
+    task = f"""
+هذه معلومات الحالة والقيود الخاصة بالمستخدم:
 
-{brief}
+================ CASE BRIEF ================
+
+{case_brief}
+
+============================================
 
 
-ابدأ الآن المرحلة الأولى فقط.
+اقترح الآن بحد أقصى 5 مشاريع فقط.
 
-قدم بحد أقصى 5 أفكار.
+احترم جميع الأفكار المرفوضة المذكورة
+في CASE BRIEF.
 
-لكل فكرة وضح:
+لا تعيد تغليف فكرة مرفوضة.
 
-1. من يدفع؟
-2. لماذا يدفع؟
-3. السعر التقريبي.
-4. ماذا يحدث اليوم بدون المنتج؟
-5. البديل الحالي.
-6. لماذا نحن أفضل؟
-7. كيف نصل لأول 10 عملاء؟
-8. ماذا يمكن أتمتته؟
-9. العمل البشري المتبقي.
-10. لماذا الآن؟
+الهدف المال وليس الابتكار.
 
-لا تحاول الحكم النهائي.
-
-لا تكتب WINNER.
-
-مهمتك فقط تقديم أفضل المرشحين
-ليهاجمهم Killer.
+استخدم تنسيقاً كثيفاً حتى تتسع الأفكار
+بدون شرح مطول.
 """
 
 
     return call_model(
         HUNTER_MODEL,
-        HUNTER_SYSTEM,
-        prompt,
-        max_tokens=1600,
+        HUNTER_INSTRUCTIONS,
+        task,
+        max_tokens=1200,
         stage_name="THE HUNTER",
-        status_box=status_box
+        status_box=status
     )
 
 
 # =========================================================
-# 2 - KILLER FIRST ATTACK
+# 2. KILLER FIRST ATTACK
 # =========================================================
 
 def killer_attack(
-    brief,
     hunter_output,
-    status_box
+    status
 ):
 
-    prompt = f"""
-INVESTMENT BRIEF:
-
-{brief}
-
-
-THE HUNTER اقترح:
-
-================ HUNTER ================
-
-{hunter_output}
-
-========================================
+    hunter_short = compact_text(
+        hunter_output,
+        7000
+    )
 
 
-هاجم كل فكرة بشكل مستقل.
+    task = f"""
+THE HUNTER اقترح المشاريع التالية:
 
-لكل فكرة أعط:
+================ HUNTER =================
 
-- أقوى 3 أسباب للفشل.
-- Kill Shot واحد.
-- الدليل الذي لو وجدناه نرفضها فوراً.
-- تقييم من 10 بعد الهجوم.
+{hunter_short}
 
-افحص خصوصاً:
+=========================================
 
-المنافسة،
-ChatGPT substitution،
-CAC،
-WTP،
-churn،
-distribution،
-platform risk،
-privacy،
-legal،
-liability،
-moat،
-human sales،
-repeat usage.
 
-لا تقترح فكرة جديدة.
+هاجم كل مشروع.
 
-إذا تستحق الموت قل:
+لا تحتاج إعادة وصف المشروع بالكامل.
 
+لكل مشروع:
+
+- 3 أسباب للفشل.
+- Kill Shot.
+- الدليل الذي يجعلنا نرفضه فوراً.
+- Score /10 بعد الهجوم.
+
+إذا مات:
 KILL IT.
 """
 
 
     return call_model(
         KILLER_MODEL,
-        KILLER_SYSTEM,
-        prompt,
-        max_tokens=1400,
+        KILLER_INSTRUCTIONS,
+        task,
+        max_tokens=1050,
         stage_name="THE KILLER - الهجوم الأول",
-        status_box=status_box
+        status_box=status
     )
 
 
 # =========================================================
-# 3 - HUNTER REBUTTAL
+# 3. HUNTER REBUTTAL
 # =========================================================
 
 def hunter_rebuttal(
-    brief,
     hunter_output,
     killer_output,
-    status_box
+    status
 ):
 
-    prompt = f"""
-INVESTMENT BRIEF:
+    hunter_short = compact_text(
+        hunter_output,
+        4500
+    )
 
-{brief}
+    killer_short = compact_text(
+        killer_output,
+        4500
+    )
 
 
-رأيك الأول:
+    task = f"""
+رأيك السابق:
 
-================ HUNTER ORIGINAL ================
-
-{hunter_output}
+{hunter_short}
 
 
 هجوم THE KILLER:
 
-================ KILLER ATTACK ==================
-
-{killer_output}
-
-=================================================
+{killer_short}
 
 
 لديك رد واحد فقط.
 
-لا تضف أفكاراً جديدة.
+ممنوع إضافة أفكار جديدة.
 
-لكل فكرة لم تُقتل بوضوح:
+لكل فكرة ما زلت تدافع عنها:
 
-- رد على اعتراضات Killer.
-- قل ما الاعتراض الذي تقبله.
-- قل ما الاعتراض الذي ترفضه ولماذا.
-- ما الدليل الذي نحتاجه؟
-- هل ما زلت تدافع عنها؟
+- ما اعتراض Killer الصحيح؟
+- ما اعتراضه الذي ترفضه؟
+- لماذا؟
+- ما الدليل المطلوب؟
+- هل تتمسك بالفكرة أم تتخلى عنها؟
 
-إذا اقتنعت أنها سيئة،
-تخل عنها ولا تحاول ترقيعها.
+إذا اقتنعت أنها سيئة:
+تخل عنها.
 
-كن مختصراً.
+لا تتجاوز 500 كلمة.
 """
 
 
     return call_model(
         HUNTER_MODEL,
-        HUNTER_SYSTEM,
-        prompt,
-        max_tokens=750,
+        HUNTER_INSTRUCTIONS,
+        task,
+        max_tokens=600,
         stage_name="THE HUNTER - الرد",
-        status_box=status_box
+        status_box=status
     )
 
 
 # =========================================================
-# 4 - KILLER FINAL ATTACK
+# 4. KILLER FINAL
 # =========================================================
 
 def killer_final(
-    brief,
     hunter_output,
     killer_output,
     hunter_rebuttal_output,
-    status_box
+    status
 ):
 
-    prompt = f"""
-INVESTMENT BRIEF:
+    task = f"""
+Hunter Original:
 
-{brief}
-
-
-HUNTER ORIGINAL:
-
-{hunter_output}
+{compact_text(hunter_output, 3000)}
 
 
-YOUR FIRST ATTACK:
+Killer First Attack:
 
-{killer_output}
-
-
-HUNTER REBUTTAL:
-
-{hunter_rebuttal_output}
+{compact_text(killer_output, 3000)}
 
 
-هذه فرصتك الأخيرة قبل Operator.
+Hunter Rebuttal:
+
+{compact_text(hunter_rebuttal_output, 3000)}
+
+
+أصدر حكمك الأخير.
 
 لكل فكرة:
 
-- هل نجت أم ماتت؟
-- أقوى مشكلة متبقية.
-- هل يوجد سبب حقيقي للدفع؟
+- SURVIVES أو KILL IT.
+- أهم مشكلة متبقية.
+- هل WTP حقيقية؟
 - هل Distribution واقعية؟
-- هل هي Company أم Feature؟
-- التقييم النهائي من 10 بعد Red Team.
+- Feature أم Company؟
+- Final Red-Team Score /10.
 
-إذا لم تنج:
-
-KILL IT.
-
-لا تقترح أفكاراً جديدة.
+لا تضف أفكاراً.
+لا تتجاوز 500 كلمة.
 """
 
 
     return call_model(
         KILLER_MODEL,
-        KILLER_SYSTEM,
-        prompt,
-        max_tokens=750,
+        KILLER_INSTRUCTIONS,
+        task,
+        max_tokens=600,
         stage_name="THE KILLER - الحكم الأخير",
-        status_box=status_box
+        status_box=status
     )
 
 
 # =========================================================
-# ضغط المناظرة قبل Operator
+# LOCAL DEBATE PACKET
 #
-# Compound لديه مساحة TPM أكبر.
+# لا يوجد Compound ولا summarizer.
 # =========================================================
 
-def compress_debate(
-    brief,
+def make_debate_packet(
     hunter1,
     killer1,
     hunter2,
-    killer2,
-    status_box
+    killer2
 ):
 
-    system = """
-أنت محرر محضر مناظرة.
+    return f"""
+=== HUNTER IDEAS ===
 
-لا تضف رأياً جديداً.
+{compact_text(hunter1, 3300)}
 
-اختصر المناظرة إلى DEBATE PACKET دقيق.
 
-احتفظ لكل فكرة بـ:
+=== KILLER FIRST ATTACK ===
 
-- اسم الفكرة.
-- من يدفع.
-- السعر.
-- سبب الدفع.
-- distribution.
-- automation.
-- أقوى دفاع Hunter.
-- أقوى اعتراض Killer.
-- هل Killer قتلها أم أبقاها؟
-- أي درجات أو أرقام ذكرت.
-- أي دليل ناقص.
+{compact_text(killer1, 3300)}
 
-لا تختر Winner.
 
-لا تغير الأرقام.
+=== HUNTER REBUTTAL ===
 
-لا ترفع الدرجات.
+{compact_text(hunter2, 2600)}
+
+
+=== KILLER FINAL ATTACK ===
+
+{compact_text(killer2, 2600)}
 """
-
-
-    prompt = f"""
-BRIEF:
-
-{brief}
-
-
-HUNTER:
-
-{hunter1}
-
-
-KILLER ATTACK:
-
-{killer1}
-
-
-HUNTER REBUTTAL:
-
-{hunter2}
-
-
-KILLER FINAL:
-
-{killer2}
-
-
-أنشئ الآن DEBATE PACKET مضغوطاً.
-"""
-
-
-    return call_model(
-        COMPRESSOR_MODEL,
-        system,
-        prompt,
-        max_tokens=1300,
-        stage_name="ضغط محضر المناظرة",
-        status_box=status_box
-    )
 
 
 # =========================================================
-# 5 - OPERATOR PRELIMINARY VERDICT
+# 5. OPERATOR
 # =========================================================
 
 def operator_evaluate(
-    brief,
     debate_packet,
-    status_box
+    status
 ):
 
-    prompt = f"""
-INVESTMENT BRIEF:
+    task = f"""
+هذا هو محضر Red Team المضغوط محلياً:
 
-{brief}
-
-
-DEBATE PACKET:
+====================================
 
 {debate_packet}
 
+====================================
 
-أنت الآن THE OPERATOR.
 
-قيّم فقط الأفكار التي نجت.
+قيّم فقط الأفكار التي نجت من Killer.
 
-طبق نظام الـ100 نقطة الموجود في Brief
-حرفياً.
+طبق نظام 100 نقطة حرفياً.
 
-لا ترفع الدرجات لتصل إلى 85.
+لا ترفع الدرجات.
 
-لكل فكرة ناجية احسب أو قدّر:
+قدم:
 
-Economics:
-- Price
-- Gross margin
-- recurring revenue
-- LTV
-- CAC
-- العملاء اللازمون لـ:
-  $1k MRR
-  $5k MRR
-  $10k MRR
+1. Economics.
+2. Build.
+3. Automation.
+4. Distribution.
+5. Truth Test للأفكار 80+.
 
-Build:
-- ماذا نبني؟
-- ماذا نربط؟
-- ماذا لا نحتاج؟
-- التشغيل التقريبي.
-- زمن MVP.
-
-Automation:
-- النسبة %
-- أين يحتاج تدخل محمد؟
-
-Distribution:
-- قناة محددة.
-- كيف نحصل على أول عميل يدفع؟
-
-اختبار الحقيقة لكل فكرة 80+.
-
-ثم أعط الجدول:
+ثم الجدول:
 
 | Rank | Idea | Score | First Buyer | Price | Automation | Fastest Test | Biggest Risk |
 
-اختر PROVISIONAL WINNER فقط إذا تجاوز 85/100.
+إذا لا توجد فكرة فوق 85:
+اكتب NO WINNER.
 
-إذا لا يوجد:
-قل بوضوح NO WINNER.
+إذا يوجد WINNER فوق 85:
+قدم البنود العشرين المطلوبة في تعليماتك.
 
-إذا يوجد Winner، قدم البنود الـ20 المطلوبة
-في الـBrief.
-
-لكن لا تكتب FINAL VERDICT بعد.
-سنسمح لـKiller باعتراض أخير.
+لا تكتب FINAL VERDICT بعد.
 """
 
 
     return call_model(
         OPERATOR_MODEL,
-        OPERATOR_SYSTEM,
-        prompt,
-        max_tokens=2100,
-        stage_name="THE OPERATOR - التقييم",
-        status_box=status_box
+        OPERATOR_INSTRUCTIONS,
+        task,
+        max_tokens=1600,
+        stage_name="THE OPERATOR",
+        status_box=status
     )
 
 
 # =========================================================
-# 6 - FINAL OBJECTION
+# 6. FINAL OBJECTION
 # =========================================================
 
-def killer_objection(
-    brief,
+def killer_final_objection(
     operator_output,
-    status_box
+    status
 ):
 
-    prompt = f"""
-INVESTMENT BRIEF:
+    operator_short = compact_text(
+        operator_output,
+        7000
+    )
 
-{brief}
 
+    task = f"""
+THE OPERATOR أصدر التقييم التالي:
 
-THE OPERATOR كتب:
+====================================
 
-================ OPERATOR =================
+{operator_short}
 
-{operator_output}
-
-===========================================
+====================================
 
 
 اكتب الآن فقط:
 
 ## FINAL OBJECTION
 
-إذا اختار Operator Winner:
+إذا يوجد WINNER:
 
-قدم أقوى حجة ممكنة لعدم بناء هذه الفكرة.
+قدم أقوى حجة ممكنة تجعل هذا المشروع
+ينتهي عند $0 MRR.
 
-حاول قتلها للمرة الأخيرة.
+لا تجامل.
 
-ركز على السبب الذي يمكن أن يجعل
-المشروع يصل فعلياً إلى $0 MRR
-حتى لو كان التحليل السابق يبدو جيداً.
+إذا NO WINNER:
 
-إذا Operator قال NO WINNER:
+اشرح باختصار لماذا عدم البناء
+أفضل من إجبارنا على اختيار فكرة ضعيفة.
 
-اشرح في فقرة قصيرة لماذا هذا القرار
-أفضل من إجبارنا على بناء فكرة ضعيفة.
-
-لا تقترح فكرة جديدة.
+لا تقترح أي مشروع جديد.
 """
 
 
     return call_model(
         KILLER_MODEL,
-        KILLER_SYSTEM,
-        prompt,
-        max_tokens=500,
+        KILLER_INSTRUCTIONS,
+        task,
+        max_tokens=400,
         stage_name="THE KILLER - FINAL OBJECTION",
-        status_box=status_box
+        status_box=status
     )
 
 
 # =========================================================
-# 7 - FINAL VERDICT
+# 7. FINAL VERDICT
 # =========================================================
 
 def operator_final_verdict(
-    brief,
     operator_output,
-    killer_objection_output,
-    status_box
+    objection_output,
+    status
 ):
 
-    prompt = f"""
-INVESTMENT BRIEF:
-
-{brief}
-
-
+    task = f"""
 تقييمك السابق:
 
-================ OPERATOR =================
-
-{operator_output}
+{compact_text(operator_output, 6500)}
 
 
-اعتراض Killer النهائي:
+FINAL OBJECTION من Killer:
 
-================ FINAL OBJECTION ==========
+{compact_text(objection_output, 2500)}
 
-{killer_objection_output}
-
-===========================================
-
-
-أنت THE OPERATOR.
-
-لا تعيد التقرير كله.
 
 اكتب الآن فقط:
 
 ## FINAL VERDICT
 
-ثم:
+ثم واحد فقط:
 
 BUILD
 
@@ -1069,30 +1142,26 @@ BUILD
 KILL
 
 
-بعدها فسّر القرار باختصار شديد.
+بعدها تفسير مختصر.
 
 إذا BUILD:
-حدد أول اختبار مدفوع يجب تنفيذه
-خلال 7 أيام.
+حدد أول اختبار مدفوع خلال 7 أيام.
 
 إذا KILL:
-حدد بالضبط أي افتراض فشل
-ولماذا لا يجب البناء الآن.
+حدد الافتراض الذي فشل.
 
-لا ترفع الدرجة.
-
-لا تغير Winner إلا إذا اعتراض Killer
-فعلاً كشف مشكلة جوهرية.
+لا تغير الدرجات السابقة
+إلا إذا اعتراض Killer كشف خطأ جوهرياً.
 """
 
 
     return call_model(
         OPERATOR_MODEL,
-        OPERATOR_SYSTEM,
-        prompt,
-        max_tokens=550,
+        OPERATOR_INSTRUCTIONS,
+        task,
+        max_tokens=450,
         stage_name="THE OPERATOR - FINAL VERDICT",
-        status_box=status_box
+        status_box=status
     )
 
 
@@ -1102,7 +1171,7 @@ KILL
 
 def build_report(
     original_question,
-    brief,
+    case_brief,
     hunter1,
     killer1,
     hunter2,
@@ -1117,17 +1186,17 @@ MD AI COUNCIL
 INVESTMENT RED TEAM
 
 ========================================
-ORIGINAL REQUEST
+ORIGINAL INPUT
 ========================================
 
 {original_question}
 
 
 ========================================
-INVESTMENT BRIEF
+CASE BRIEF USED BY THE COUNCIL
 ========================================
 
-{brief}
+{case_brief}
 
 
 ========================================
@@ -1138,7 +1207,7 @@ INVESTMENT BRIEF
 
 
 ========================================
-2. THE KILLER - FIRST ATTACK
+2. THE KILLER
 ========================================
 
 {killer1}
@@ -1181,7 +1250,7 @@ FINAL VERDICT
 
 
 # =========================================================
-# PDF HELPERS
+# PDF
 # =========================================================
 
 def clean_pdf_text(text):
@@ -1297,6 +1366,12 @@ def create_pdf(report_text):
     )
 
 
+    pdf.set_font(
+        "Arabic",
+        size=11
+    )
+
+
     try:
 
         pdf.set_text_shaping(
@@ -1325,21 +1400,10 @@ def create_pdf(report_text):
             continue
 
 
-        if (
-            paragraph.startswith("===")
-            or paragraph in [
-                "MD AI COUNCIL",
-                "INVESTMENT RED TEAM"
-            ]
+        if paragraph.startswith(
+            "================================"
         ):
-
             continue
-
-
-        pdf.set_font(
-            "Arabic",
-            size=11
-        )
 
 
         pdf.multi_cell(
@@ -1361,33 +1425,22 @@ def create_pdf(report_text):
 # SESSION STATE
 # =========================================================
 
-STATE_DEFAULTS = {
-
-    "question": "",
-
-    "brief": None,
-
+DEFAULT_STATE = {
+    "original_question": "",
+    "case_brief": None,
+    "brief_info": None,
     "hunter1": None,
-
     "killer1": None,
-
     "hunter2": None,
-
     "killer2": None,
-
-    "packet": None,
-
     "operator": None,
-
     "objection": None,
-
     "verdict": None,
-
     "error": None
 }
 
 
-for key, value in STATE_DEFAULTS.items():
+for key, value in DEFAULT_STATE.items():
 
     if key not in st.session_state:
 
@@ -1408,21 +1461,36 @@ st.caption(
 )
 
 
-st.write(
+st.info(
     """
-THE HUNTER يبحث عن الفرص.
+قواعد Hunter / Killer / Operator ونظام الـ100 نقطة
+أصبحت مدمجة داخل التطبيق.
 
-THE KILLER يحاول قتلها.
-
-THE OPERATOR يحكم على ما تبقى.
+إذا لصقت البرومبت القديم الطويل،
+سيحذف التطبيق قسم الوكلاء والقواعد تلقائياً
+ويحتفظ بالهدف والأصول والأفكار المرفوضة.
 """
 )
 
 
 question = st.text_area(
-    "اكتب الـInvestment Brief أو السؤال:",
+    "اكتب الحالة أو الصق البرومبت السابق:",
     height=350,
-    value=st.session_state.question
+    value=st.session_state.original_question,
+    placeholder="""
+مثال:
+
+نريد مشروعاً عالي الأتمتة وسريع الوصول للدخل.
+
+الأصول:
+- Stripe
+- DeepSeek API
+- Replit
+- Composio
+
+الأفكار المرفوضة:
+- ...
+"""
 )
 
 
@@ -1442,21 +1510,18 @@ if start:
     if not question.strip():
 
         st.warning(
-            "اكتب الطلب أولاً."
+            "اكتب الحالة أولاً."
         )
 
     else:
 
-        # reset
-        for key in STATE_DEFAULTS:
+        # Reset
+        for key, value in DEFAULT_STATE.items():
 
-            st.session_state[key] = (
-                "" if key == "question"
-                else None
-            )
+            st.session_state[key] = value
 
 
-        st.session_state.question = (
+        st.session_state.original_question = (
             question
         )
 
@@ -1464,45 +1529,71 @@ if start:
         status = st.empty()
 
 
-        # =============================================
-        # BRIEF
-        # =============================================
+        # =================================================
+        # PREPARE LOCALLY
+        # =================================================
 
         status.info(
-            "📋 تجهيز Investment Brief مضغوط..."
+            "📋 تجهيز الحالة محلياً بدون AI..."
         )
 
 
-        brief_result = compress_brief(
-            question,
+        brief_info = prepare_case_brief(
+            question
+        )
+
+
+        case_brief = brief_info["text"]
+
+
+        st.session_state.case_brief = (
+            case_brief
+        )
+
+        st.session_state.brief_info = (
+            brief_info
+        )
+
+
+        # =================================================
+        # HUNTER
+        # =================================================
+
+        status.info(
+            "🎯 THE HUNTER يبحث عن المشاريع..."
+        )
+
+
+        result = hunter_generate(
+            case_brief,
             status
         )
 
 
-        if not brief_result["ok"]:
+        if not result["ok"]:
 
             st.session_state.error = (
-                brief_result["error"]
+                result["error"]
             )
 
         else:
 
-            st.session_state.brief = (
-                brief_result["text"]
+            st.session_state.hunter1 = (
+                result["text"]
             )
 
 
-            # =========================================
-            # HUNTER
-            # =========================================
+            # =============================================
+            # KILLER
+            # =============================================
 
             status.info(
-                "🎯 THE HUNTER يبحث عن فرص..."
+                "🔪 THE KILLER يهاجم المشاريع..."
             )
 
 
-            result = hunter_generate(
-                st.session_state.brief,
+            result = killer_attack(
+                st.session_state.hunter1,
                 status
             )
 
@@ -1515,23 +1606,23 @@ if start:
 
             else:
 
-                st.session_state.hunter1 = (
+                st.session_state.killer1 = (
                     result["text"]
                 )
 
 
-                # =====================================
-                # KILLER
-                # =====================================
+                # =========================================
+                # HUNTER REBUTTAL
+                # =========================================
 
                 status.info(
-                    "🔪 THE KILLER يهاجم الأفكار..."
+                    "🎯 THE HUNTER يرد مرة واحدة..."
                 )
 
 
-                result = killer_attack(
-                    st.session_state.brief,
+                result = hunter_rebuttal(
                     st.session_state.hunter1,
+                    st.session_state.killer1,
                     status
                 )
 
@@ -1544,24 +1635,24 @@ if start:
 
                 else:
 
-                    st.session_state.killer1 = (
+                    st.session_state.hunter2 = (
                         result["text"]
                     )
 
 
-                    # =================================
-                    # HUNTER REPLY
-                    # =================================
+                    # =====================================
+                    # KILLER FINAL
+                    # =====================================
 
                     status.info(
-                        "🎯 THE HUNTER يرد مرة واحدة..."
+                        "🔪 THE KILLER يصدر حكمه النهائي..."
                     )
 
 
-                    result = hunter_rebuttal(
-                        st.session_state.brief,
+                    result = killer_final(
                         st.session_state.hunter1,
                         st.session_state.killer1,
+                        st.session_state.hunter2,
                         status
                     )
 
@@ -1574,25 +1665,34 @@ if start:
 
                     else:
 
-                        st.session_state.hunter2 = (
+                        st.session_state.killer2 = (
                             result["text"]
                         )
 
 
-                        # =============================
-                        # KILLER FINAL
-                        # =============================
+                        # ================================
+                        # LOCAL PACKET
+                        # ================================
 
-                        status.info(
-                            "🔪 THE KILLER يصدر حكمه الأخير..."
-                        )
-
-
-                        result = killer_final(
-                            st.session_state.brief,
+                        packet = make_debate_packet(
                             st.session_state.hunter1,
                             st.session_state.killer1,
                             st.session_state.hunter2,
+                            st.session_state.killer2
+                        )
+
+
+                        # ================================
+                        # OPERATOR
+                        # ================================
+
+                        status.info(
+                            "📊 THE OPERATOR يحسب الاقتصاديات..."
+                        )
+
+
+                        result = operator_evaluate(
+                            packet,
                             status
                         )
 
@@ -1605,26 +1705,22 @@ if start:
 
                         else:
 
-                            st.session_state.killer2 = (
+                            st.session_state.operator = (
                                 result["text"]
                             )
 
 
-                            # =========================
-                            # COMPRESS DEBATE
-                            # =========================
+                            # ============================
+                            # FINAL OBJECTION
+                            # ============================
 
                             status.info(
-                                "🗜️ تجهيز محضر مختصر للـOperator..."
+                                "🔪 FINAL OBJECTION..."
                             )
 
 
-                            result = compress_debate(
-                                st.session_state.brief,
-                                st.session_state.hunter1,
-                                st.session_state.killer1,
-                                st.session_state.hunter2,
-                                st.session_state.killer2,
+                            result = killer_final_objection(
+                                st.session_state.operator,
                                 status
                             )
 
@@ -1637,23 +1733,23 @@ if start:
 
                             else:
 
-                                st.session_state.packet = (
+                                st.session_state.objection = (
                                     result["text"]
                                 )
 
 
-                                # =====================
-                                # OPERATOR
-                                # =====================
+                                # ========================
+                                # VERDICT
+                                # ========================
 
                                 status.info(
-                                    "📊 THE OPERATOR يحسب الاقتصاديات..."
+                                    "🏛️ FINAL VERDICT..."
                                 )
 
 
-                                result = operator_evaluate(
-                                    st.session_state.brief,
-                                    st.session_state.packet,
+                                result = operator_final_verdict(
+                                    st.session_state.operator,
+                                    st.session_state.objection,
                                     status
                                 )
 
@@ -1666,73 +1762,14 @@ if start:
 
                                 else:
 
-                                    st.session_state.operator = (
+                                    st.session_state.verdict = (
                                         result["text"]
                                     )
 
 
-                                    # =================
-                                    # OBJECTION
-                                    # =================
-
-                                    status.info(
-                                        "🔪 FINAL OBJECTION..."
+                                    status.success(
+                                        "✅ انتهت المناظرة"
                                     )
-
-
-                                    result = killer_objection(
-                                        st.session_state.brief,
-                                        st.session_state.operator,
-                                        status
-                                    )
-
-
-                                    if not result["ok"]:
-
-                                        st.session_state.error = (
-                                            result["error"]
-                                        )
-
-                                    else:
-
-                                        st.session_state.objection = (
-                                            result["text"]
-                                        )
-
-
-                                        # =============
-                                        # VERDICT
-                                        # =============
-
-                                        status.info(
-                                            "🏛️ FINAL VERDICT..."
-                                        )
-
-
-                                        result = operator_final_verdict(
-                                            st.session_state.brief,
-                                            st.session_state.operator,
-                                            st.session_state.objection,
-                                            status
-                                        )
-
-
-                                        if not result["ok"]:
-
-                                            st.session_state.error = (
-                                                result["error"]
-                                            )
-
-                                        else:
-
-                                            st.session_state.verdict = (
-                                                result["text"]
-                                            )
-
-
-                                            status.success(
-                                                "✅ انتهت المناظرة"
-                                            )
 
 
 # =========================================================
@@ -1757,22 +1794,43 @@ if st.session_state.error:
 
 
 # =========================================================
-# SHOW BRIEF
+# BRIEF INFO
 # =========================================================
 
-if st.session_state.brief:
+if st.session_state.case_brief:
+
+    info = st.session_state.brief_info
+
+
+    if info:
+
+        if info["removed_protocol"]:
+
+            st.success(
+                "✅ تم حذف قسم الوكلاء والقواعد "
+                "من البرومبت تلقائياً لأنهم مدمجون في التطبيق."
+            )
+
+
+        if info["trimmed"]:
+
+            st.warning(
+                "⚠️ كان النص طويلاً جداً، "
+                "فتم اختصاره محلياً قبل إرساله."
+            )
+
 
     with st.expander(
-        "📋 Investment Brief المضغوط"
+        "📋 CASE BRIEF الذي استخدمه المجلس"
     ):
 
         st.markdown(
-            st.session_state.brief
+            st.session_state.case_brief
         )
 
 
 # =========================================================
-# SHOW DEBATE
+# RESULTS
 # =========================================================
 
 if st.session_state.hunter1:
@@ -1806,7 +1864,7 @@ if st.session_state.hunter2:
     st.divider()
 
     st.header(
-        "🎯 3. THE HUNTER - REBUTTAL"
+        "🎯 3. HUNTER REBUTTAL"
     )
 
     st.markdown(
@@ -1819,7 +1877,7 @@ if st.session_state.killer2:
     st.divider()
 
     st.header(
-        "🔪 4. THE KILLER - FINAL ATTACK"
+        "🔪 4. KILLER FINAL ATTACK"
     )
 
     st.markdown(
@@ -1866,13 +1924,9 @@ if st.session_state.verdict:
     )
 
 
-    # =============================================
-    # REPORT
-    # =============================================
-
     report = build_report(
-        st.session_state.question,
-        st.session_state.brief,
+        st.session_state.original_question,
+        st.session_state.case_brief,
         st.session_state.hunter1,
         st.session_state.killer1,
         st.session_state.hunter2,
@@ -1891,7 +1945,7 @@ if st.session_state.verdict:
 
 
     st.download_button(
-        "📝 تحميل التقرير TXT",
+        label="📝 تحميل التقرير TXT",
         data=report.encode("utf-8"),
         file_name="MD_Investment_Debate.txt",
         mime="text/plain",
@@ -1901,14 +1955,14 @@ if st.session_state.verdict:
 
     try:
 
-        pdf = create_pdf(
+        pdf_bytes = create_pdf(
             report
         )
 
 
         st.download_button(
-            "📄 تحميل التقرير PDF",
-            data=pdf,
+            label="📄 تحميل التقرير PDF",
+            data=pdf_bytes,
             file_name="MD_Investment_Debate.pdf",
             mime="application/pdf",
             use_container_width=True
@@ -1917,8 +1971,13 @@ if st.session_state.verdict:
 
     except Exception as e:
 
+        st.warning(
+            "تعذر إنشاء PDF."
+        )
+
+
         with st.expander(
-            "مشكلة PDF"
+            "🔧 سبب مشكلة PDF"
         ):
 
             st.code(
@@ -1931,7 +1990,7 @@ if st.session_state.verdict:
 # =========================================================
 
 if (
-    st.session_state.brief
+    st.session_state.case_brief
     or st.session_state.error
 ):
 
@@ -1942,7 +2001,7 @@ if (
         "🗑️ مسح المناظرة والبدء من جديد"
     ):
 
-        for key, value in STATE_DEFAULTS.items():
+        for key, value in DEFAULT_STATE.items():
 
             st.session_state[key] = value
 
