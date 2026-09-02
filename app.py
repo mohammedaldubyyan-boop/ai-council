@@ -17,7 +17,7 @@ from fpdf import FPDF
 # BUILD
 # =========================================================
 
-BUILD_ID = "V8-EVIDENCE-FIRST-RESEARCH"
+BUILD_ID = "V8.1-HUNTER-TOPUP"
 
 
 # =========================================================
@@ -421,7 +421,7 @@ def filter_ideas(data):
 
 
 # =========================================================
-# HUNTER SCHEMA
+# HUNTER SCHEMA + TOP-UP
 # =========================================================
 
 idea_schema = obj(
@@ -456,11 +456,74 @@ idea_schema = obj(
     }
 )
 
-HUNTER_SCHEMA = obj({"ideas": arr(idea_schema, 3, 3)})
+# IMPORTANT:
+# لا نجبر الموديل على إخراج 3 أفكار طويلة في طلب واحد.
+# الدفعة الأولى تسمح بـ 1-2 فقط، ثم نكمل بفكرة واحدة في كل Top-Up.
+HUNTER_BATCH_SCHEMA = obj({"ideas": arr(idea_schema, 1, 2)})
+HUNTER_TOPUP_SCHEMA = obj({"idea": idea_schema})
 
 
-def run_hunter(case_brief, status):
-    system = """
+def idea_signature(idea):
+    return norm(
+        " ".join(
+            [
+                idea.get("name", ""),
+                idea.get("one_liner", ""),
+                idea.get("job_to_be_done", ""),
+                idea.get("buyer", ""),
+            ]
+        )
+    )
+
+
+def is_duplicate_idea(candidate, existing):
+    candidate_sig = idea_signature(candidate)
+    candidate_name = norm(candidate.get("name", ""))
+    candidate_jtbd = norm(candidate.get("job_to_be_done", ""))
+
+    for old in existing:
+        old_sig = idea_signature(old)
+        old_name = norm(old.get("name", ""))
+        old_jtbd = norm(old.get("job_to_be_done", ""))
+
+        if candidate_name and old_name:
+            if candidate_name == old_name:
+                return True
+
+            if difflib.SequenceMatcher(
+                None,
+                candidate_name,
+                old_name,
+            ).ratio() >= 0.80:
+                return True
+
+        if candidate_jtbd and old_jtbd:
+            if difflib.SequenceMatcher(
+                None,
+                candidate_jtbd,
+                old_jtbd,
+            ).ratio() >= 0.82:
+                return True
+
+        if candidate_sig and old_sig:
+            if difflib.SequenceMatcher(
+                None,
+                candidate_sig,
+                old_sig,
+            ).ratio() >= 0.78:
+                return True
+
+    return False
+
+
+def renumber_ideas(ideas):
+    for index, idea in enumerate(ideas, 1):
+        idea["id"] = f"idea-{index}"
+    return ideas
+
+
+def hunter_core_rules():
+    return """
 أنت THE HUNTER.
 
 ابحث عن أماكن تتحرك فيها الأموال فعلياً.
@@ -478,17 +541,29 @@ def run_hunter(case_brief, status):
 - أداة يستطيع ChatGPT تنفيذها بما يكفي
 - إعادة تغليف فكرة رفضها المستخدم
 
-أخرج 3 أفكار فقط مختلفة اقتصادياً.
-
-لكل فكرة يجب أن تحدد Job-to-be-Done بدقة.
-ويجب أن تشرح ما الذي يُعتبر منافساً مباشراً وما الذي لا يُعتبر منافساً مباشراً.
-واكتب Search Terms محددة للمنافسين، الأسعار، WTP، التوزيع، والتنظيم.
+لكل فكرة:
+- حدد Job-to-be-Done بدقة.
+- عرّف المنافس المباشر بدقة.
+- اشرح ما الذي لا يُعد منافساً مباشراً.
+- Search Terms يجب أن تكون قصيرة ومحددة.
+- لا تخترع أرقام سوق أو قوانين كحقائق.
 
 إذا كانت الفكرة قريبة من فكرة مرفوضة:
 similar_to_rejected=true.
 
 لا تختر WINNER.
-لا تعامل فرضية غير مثبتة كحقيقة.
+اجعل الحقول مختصرة ومباشرة حتى يكتمل JSON.
+"""
+
+
+def run_hunter(case_brief, status):
+    # -----------------------------------------------------
+    # 1) الدفعة الأولى: 1-2 أفكار فقط
+    # -----------------------------------------------------
+    system = hunter_core_rules() + """
+
+في هذه الدفعة أخرج فكرة أو فكرتين فقط.
+لا تحاول إخراج 3 أفكار الآن.
 """
 
     prompt = f"""
@@ -499,19 +574,133 @@ similar_to_rejected=true.
 القائمة المرفوضة:
 
 {json.dumps(REJECTED_IDEAS, ensure_ascii=False)}
+
+أنشئ الآن أفضل فكرة أو فكرتين مختلفتين اقتصادياً.
 """
 
-    return call_json(
+    initial = call_json(
         HUNTER_MODEL,
         system,
         prompt,
-        "hunter_ideas_v8",
-        HUNTER_SCHEMA,
-        1900,
-        "THE HUNTER",
+        "hunter_batch_v81",
+        HUNTER_BATCH_SCHEMA,
+        1450,
+        "THE HUNTER — الدفعة الأولى",
         status,
         "low",
     )
+
+    if not initial["ok"]:
+        return initial
+
+    ideas = []
+
+    for candidate in initial["data"].get("ideas", []):
+        if not is_duplicate_idea(candidate, ideas):
+            ideas.append(candidate)
+
+    # -----------------------------------------------------
+    # 2) Top-Up: فكرة واحدة في كل مرة حتى نصل إلى 3
+    # -----------------------------------------------------
+    attempts = 0
+    max_topup_attempts = 5
+
+    while len(ideas) < 3 and attempts < max_topup_attempts:
+        attempts += 1
+
+        existing_summary = [
+            {
+                "name": idea.get("name", ""),
+                "buyer": cut(idea.get("buyer", ""), 180),
+                "job_to_be_done": cut(
+                    idea.get("job_to_be_done", ""),
+                    260,
+                ),
+            }
+            for idea in ideas
+        ]
+
+        topup_system = hunter_core_rules() + """
+
+أخرج فكرة واحدة فقط في الحقل idea.
+يجب أن تكون مختلفة اقتصادياً عن الأفكار الموجودة.
+لا تعيد نفس Job-to-be-Done باسم جديد.
+"""
+
+        topup_prompt = f"""
+حالة المستخدم:
+
+{case_brief}
+
+الأفكار الموجودة بالفعل:
+
+{json.dumps(existing_summary, ensure_ascii=False)}
+
+القائمة المرفوضة:
+
+{json.dumps(REJECTED_IDEAS, ensure_ascii=False)}
+
+نحتاج فكرة واحدة جديدة فقط حتى نصل إلى 3 أفكار.
+لا تكرر أي فكرة موجودة.
+"""
+
+        status.info(
+            f"🎯 THE HUNTER Top-Up: "
+            f"لدينا {len(ideas)}/3 — توليد فكرة إضافية..."
+        )
+
+        topup = call_json(
+            HUNTER_MODEL,
+            topup_system,
+            topup_prompt,
+            "hunter_topup_v81",
+            HUNTER_TOPUP_SCHEMA,
+            900,
+            f"THE HUNTER TOP-UP {attempts}",
+            status,
+            "low",
+        )
+
+        if not topup["ok"]:
+            # لا نفشل مباشرة؛ نجرب محاولة Top-Up أخرى.
+            continue
+
+        candidate = topup["data"].get("idea")
+        if not candidate:
+            continue
+
+        if is_duplicate_idea(candidate, ideas):
+            status.warning(
+                "⚠️ Hunter أعاد فكرة قريبة من الموجودة؛ "
+                "سيحاول فكرة مختلفة."
+            )
+            continue
+
+        ideas.append(candidate)
+
+    # -----------------------------------------------------
+    # 3) تحقق برمجي قبل الانتقال
+    # -----------------------------------------------------
+    if len(ideas) < 3:
+        names = [idea.get("name", "بدون اسم") for idea in ideas]
+        return {
+            "ok": False,
+            "data": None,
+            "error": (
+                "Hunter لم يتمكن من إنشاء 3 أفكار مختلفة بعد "
+                f"{max_topup_attempts} محاولات Top-Up.\n\n"
+                f"تم جمع {len(ideas)} فقط: {names}\n\n"
+                "لم يبدأ Web Research حتى لا يصدر المجلس حكماً ناقصاً."
+            ),
+        }
+
+    ideas = renumber_ideas(ideas[:3])
+
+    return {
+        "ok": True,
+        "data": {"ideas": ideas},
+        "error": None,
+    }
 
 
 # =========================================================
@@ -1685,7 +1874,7 @@ def build_report(
     objection,
     verdict,
 ):
-    output = ["MD INVESTMENT RESEARCH COUNCIL — V8", "\nIDEAS"]
+    output = ["MD INVESTMENT RESEARCH COUNCIL — V8.1", "\nIDEAS"]
 
     for idea in ideas:
         output += [
@@ -1890,7 +2079,7 @@ st.caption(f"Build: {BUILD_ID}")
 
 st.info(
     """
-**V8 — Evidence First**
+**V8.1 — Evidence First + Hunter Top-Up**
 
 الجديد:
 - تعريف Job-to-be-Done لكل فكرة.
@@ -2312,7 +2501,7 @@ if st.session_state.verdict:
     st.download_button(
         "📝 تحميل التقرير TXT",
         report.encode("utf-8"),
-        "MD_Investment_Research_V8.txt",
+        "MD_Investment_Research_V8_1.txt",
         "text/plain",
         use_container_width=True,
     )
@@ -2321,7 +2510,7 @@ if st.session_state.verdict:
         st.download_button(
             "📄 تحميل التقرير PDF",
             create_pdf(report),
-            "MD_Investment_Research_V8.pdf",
+            "MD_Investment_Research_V8_1.pdf",
             "application/pdf",
             use_container_width=True,
         )
