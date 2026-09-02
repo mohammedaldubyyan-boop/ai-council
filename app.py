@@ -17,7 +17,7 @@ from fpdf import FPDF
 # BUILD
 # =========================================================
 
-BUILD_ID = "V8.1-HUNTER-TOPUP"
+BUILD_ID = "V8.2-EVIDENCE-LOCK-TARGETED-RESEARCH"
 
 
 # =========================================================
@@ -951,8 +951,9 @@ def category_sources(sources, category, min_score=60):
     return [
         s
         for s in sources
-        if s["evaluation"]["relevance_score"] >= min_score
-        and category in s["evaluation"]["categories"]
+        if s.get("evaluation", {}).get("relevance_score", 0) >= min_score
+        and category in s.get("evaluation", {}).get("categories", [])
+        and "IRRELEVANT" not in s.get("evaluation", {}).get("categories", [])
     ]
 
 
@@ -961,13 +962,18 @@ def research_gate(idea, sources):
     pricing = category_sources(sources, "PRICING_EVIDENCE", 60)
     wtp = category_sources(sources, "WTP_EVIDENCE", 60)
     distribution = category_sources(sources, "DISTRIBUTION_EVIDENCE", 60)
-    regulatory = category_sources(sources, "REGULATORY_EVIDENCE", 65)
+    regulatory = [
+        s
+        for s in category_sources(sources, "REGULATORY_EVIDENCE", 65)
+        if s.get("evaluation", {}).get("authoritative", False)
+    ]
 
     relevant_domains = {
         domain(s["url"])
         for s in sources
-        if s["evaluation"]["relevance_score"] >= 60
-        and "IRRELEVANT" not in s["evaluation"]["categories"]
+        if s.get("evaluation", {}).get("relevance_score", 0) >= 60
+        and "IRRELEVANT" not in s.get("evaluation", {}).get("categories", [])
+        and domain(s.get("url", ""))
     }
 
     checks = {
@@ -984,12 +990,8 @@ def research_gate(idea, sources):
     score = sum(1 for v in checks.values() if v)
     max_score = len(checks)
 
-    if score <= 2:
-        status = "RESEARCH_FAILED"
-    elif score < max_score:
-        status = "INSUFFICIENT_EVIDENCE"
-    else:
-        status = "SUFFICIENT"
+    # V8.2: weak/irrelevant evidence is not a technical failure.
+    status = "SUFFICIENT" if score == max_score else "INSUFFICIENT_EVIDENCE"
 
     return {
         "status": status,
@@ -1007,7 +1009,6 @@ def research_gate(idea, sources):
 
 def missing_query_types(gate):
     missing = []
-
     if not gate["checks"]["2_direct_competitors"]:
         missing.append("direct_competitors")
     if not gate["checks"]["pricing_evidence"]:
@@ -1018,13 +1019,14 @@ def missing_query_types(gate):
         missing.append("distribution")
     if not gate["checks"]["regulatory_evidence_if_needed"]:
         missing.append("regulatory")
-
     return missing
-
 
 # =========================================================
 # TARGETED RESEARCH
 # =========================================================
+
+MAX_RESEARCH_ROUNDS = 3
+
 
 def base_queries(idea):
     queries = [
@@ -1035,130 +1037,203 @@ def base_queries(idea):
         ("wtp", idea["wtp_search_term"]),
         ("distribution", idea["distribution_search_term"]),
     ]
-
     if idea["regulatory_sensitive"] and idea["regulatory_search_term"].strip():
         queries.append(("regulatory", idea["regulatory_search_term"]))
-
     return queries
 
 
-def retry_queries_for(idea, missing_types):
-    mapping = {
+def brand_hint(title):
+    title = str(title or "").strip()
+    if not title:
+        return ""
+    first = re.split(r"\s*[|–—:]\s*|\s+-\s+", title, maxsplit=1)[0]
+    return cut(first, 70).replace("\n", " ").strip()
+
+
+def direct_competitor_hints(sources, limit=4):
+    hints = []
+    for source in sources:
+        ev = source.get("evaluation", {})
+        if (
+            ev.get("relevance_score", 0) >= 65
+            and "DIRECT_COMPETITOR" in ev.get("categories", [])
+        ):
+            hint = brand_hint(source.get("title", ""))
+            if hint and hint not in hints:
+                hints.append(hint)
+        if len(hints) >= limit:
+            break
+    return hints
+
+
+def retry_queries_for(idea, missing_types, sources=None, round_no=2):
+    sources = sources or []
+    competitors = direct_competitor_hints(sources)
+    output = []
+
+    base = {
         "direct_competitors": [
             f'"{idea["job_to_be_done"]}" software',
-            f'"{idea["job_to_be_done"]}" API pricing',
+            f'"{idea["job_to_be_done"]}" API service competitor',
+            f'"{idea["direct_competitor_definition"]}"',
         ],
         "pricing": [
-            f'"{idea["job_to_be_done"]}" pricing',
-            f'"{idea["job_to_be_done"]}" price API SaaS',
+            f'"{idea["job_to_be_done"]}" pricing fees',
+            f'"{idea["job_to_be_done"]}" API pricing SaaS',
         ],
         "wtp": [
-            f'"{idea["buyer"]}" "{idea["problem"]}" cost',
-            f'"{idea["job_to_be_done"]}" ROI case study',
+            f'"{idea["buyer"]}" "{idea["problem"]}" cost ROI',
+            f'"{idea["job_to_be_done"]}" customer case study ROI',
+            f'"{idea["job_to_be_done"]}" paid service customers',
         ],
         "distribution": [
             f'"{idea["buyer"]}" marketplace directory association',
-            f'"{idea["buyer"]}" software marketplace ecosystem',
+            f'"{idea["buyer"]}" integration marketplace partner program',
+            f'"{idea["job_to_be_done"]}" referral affiliate marketplace',
         ],
         "regulatory": [
-            idea["regulatory_search_term"],
-            f'"{idea["job_to_be_done"]}" regulation API license official',
+            idea.get("regulatory_search_term", ""),
+            f'"{idea["job_to_be_done"]}" regulation license official government',
+            f'"{idea["job_to_be_done"]}" API legal requirements official',
         ],
     }
 
-    output = []
+    for competitor in competitors:
+        if "pricing" in missing_types:
+            base["pricing"].append(f'"{competitor}" pricing fees plans')
+        if "wtp" in missing_types:
+            base["wtp"].append(f'"{competitor}" customers case study reviews')
+        if "distribution" in missing_types:
+            base["distribution"].append(
+                f'"{competitor}" referral affiliate partner marketplace'
+            )
+            base["distribution"].append(
+                f'"{competitor}" integration marketplace app directory'
+            )
+
+    if round_no >= 3:
+        if "pricing" in missing_types:
+            base["pricing"].append(
+                f'"{idea["name"]}" alternatives pricing transaction fee'
+            )
+        if "wtp" in missing_types:
+            base["wtp"].append(
+                f'"{idea["job_to_be_done"]}" buyer pays per month per transaction'
+            )
+        if "distribution" in missing_types:
+            base["distribution"].append(
+                f'"{idea["buyer"]}" community directory platform ecosystem'
+            )
+
+    seen = set()
     for missing in missing_types:
-        for q in mapping.get(missing, []):
-            if q and q.strip():
-                output.append((missing, q))
-    return output
+        for query in base.get(missing, []):
+            query = str(query or "").strip()
+            if query and query not in seen:
+                seen.add(query)
+                output.append((missing, query))
+    return output[:10]
 
 
 def run_search_queries(queries, status, idea_name):
     found = []
-
+    errors = []
     for idx, (query_type, query) in enumerate(queries, 1):
-        status.info(
-            f"🔎 {idea_name}: بحث {idx}/{len(queries)} — {query_type}"
-        )
-
+        status.info(f"🔎 {idea_name}: بحث {idx}/{len(queries)} — {query_type}")
         try:
             found.extend(ddgs_search(query, query_type, max_results=5))
         except Exception as e:
-            found.append(
-                {
-                    "query_type": query_type,
-                    "title": "",
-                    "url": "",
-                    "snippet": f"SEARCH_ERROR: {e}",
-                    "page_excerpt": "",
-                }
-            )
-
+            errors.append(f"{query_type}: {query}: {e}")
         time.sleep(0.8)
-
-    return [x for x in found if x.get("url")]
+    return [x for x in found if x.get("url")], errors
 
 
 def research_one_idea(idea, status):
-    # Phase 1
-    sources = dedupe_sources(run_search_queries(base_queries(idea), status, idea["name"]))
-    extract_best_pages(sources, max_pages=3)
+    all_errors = []
 
+    phase1_sources, phase1_errors = run_search_queries(
+        base_queries(idea), status, idea["name"]
+    )
+    all_errors.extend(phase1_errors)
+    sources = dedupe_sources(phase1_sources, limit=18)
+
+    if not sources:
+        return {
+            "ok": False,
+            "research_status": "RESEARCH_FAILED",
+            "gate": None,
+            "sources": [],
+            "error": "DDGS returned no usable sources.\n" + "\n".join(all_errors[-8:]),
+        }
+
+    extract_best_pages(sources, max_pages=3)
     judged = evaluate_source_relevance(idea, sources, status)
+
     if not judged["ok"]:
         return {
             "ok": False,
             "research_status": "RESEARCH_FAILED",
             "gate": None,
             "sources": sources,
-            "error": judged["error"],
+            "error": "Relevance Judge failed.\n" + str(judged["error"]),
         }
 
     sources = judged["sources"]
     gate = research_gate(idea, sources)
 
-    # Phase 2: automatic re-search if needed
-    if gate["status"] != "SUFFICIENT":
+    for round_no in range(2, MAX_RESEARCH_ROUNDS + 1):
+        if gate["status"] == "SUFFICIENT":
+            break
+
         missing = missing_query_types(gate)
-        retry_qs = retry_queries_for(idea, missing)
+        retry_qs = retry_queries_for(
+            idea,
+            missing,
+            sources=sources,
+            round_no=round_no,
+        )
+        if not retry_qs:
+            break
 
-        if retry_qs:
-            status.warning(
-                f"🔁 {idea['name']}: البحث غير كافٍ. إعادة بحث مستهدفة: "
-                + ", ".join(missing)
+        status.warning(
+            f"🔁 {idea['name']}: Research Round {round_no}/{MAX_RESEARCH_ROUNDS}. "
+            f"المفقود فقط: {', '.join(missing)}"
+        )
+
+        extra, retry_errors = run_search_queries(retry_qs, status, idea["name"])
+        all_errors.extend(retry_errors)
+        if not extra:
+            continue
+
+        combined = dedupe_sources(sources + extra, limit=22)
+        extract_best_pages(combined, max_pages=5)
+        judged_retry = evaluate_source_relevance(idea, combined, status)
+
+        if not judged_retry["ok"]:
+            all_errors.append(
+                f"Round {round_no} relevance judge failed: {judged_retry['error']}"
             )
+            continue
 
-            extra = run_search_queries(retry_qs, status, idea["name"])
-            combined = dedupe_sources(sources + extra, limit=18)
-            extract_best_pages(combined, max_pages=4)
-
-            judged2 = evaluate_source_relevance(idea, combined, status)
-            if judged2["ok"]:
-                sources = judged2["sources"]
-                gate = research_gate(idea, sources)
+        sources = judged_retry["sources"]
+        gate = research_gate(idea, sources)
 
     return {
         "ok": True,
         "research_status": gate["status"],
         "gate": gate,
         "sources": sources,
-        "error": None,
+        "error": "\n".join(all_errors[-8:]) if all_errors else None,
     }
 
 
 def research_all(ideas, status):
     research = {}
-
     for idx, idea in enumerate(ideas, 1):
-        status.info(
-            f"🌐 Evidence Research {idx}/{len(ideas)}: {idea['name']}"
-        )
+        status.info(f"🌐 Evidence Research {idx}/{len(ideas)}: {idea['name']}")
         research[idea["id"]] = research_one_idea(idea, status)
         time.sleep(1)
-
     return research
-
 
 # =========================================================
 # EVIDENCE PACKET
@@ -1199,17 +1274,110 @@ def evidence_packet(research_result):
 
 
 # =========================================================
+# EVIDENCE CATEGORY LOCK
+# =========================================================
+
+CLAIM_TYPES = [
+    "COMPETITION",
+    "PRICING",
+    "WTP",
+    "DISTRIBUTION",
+    "REGULATION",
+    "PLATFORM",
+    "OTHER",
+]
+
+CLAIM_TO_CATEGORY = {
+    "COMPETITION": "DIRECT_COMPETITOR",
+    "PRICING": "PRICING_EVIDENCE",
+    "WTP": "WTP_EVIDENCE",
+    "DISTRIBUTION": "DISTRIBUTION_EVIDENCE",
+    "REGULATION": "REGULATORY_EVIDENCE",
+    "PLATFORM": "PLATFORM_RISK",
+}
+
+
+def evidence_source_map(research_result):
+    return {
+        source.get("source_id"): source
+        for source in research_result.get("sources", [])
+        if source.get("source_id")
+    }
+
+
+def evidence_ids_by_category(research_result):
+    output = {
+        "DIRECT_COMPETITOR": [],
+        "PRICING_EVIDENCE": [],
+        "WTP_EVIDENCE": [],
+        "DISTRIBUTION_EVIDENCE": [],
+        "REGULATORY_EVIDENCE": [],
+        "PLATFORM_RISK": [],
+    }
+
+    for source in research_result.get("sources", []):
+        ev = source.get("evaluation", {})
+        if ev.get("relevance_score", 0) < 60:
+            continue
+        if "IRRELEVANT" in ev.get("categories", []):
+            continue
+
+        for category in output:
+            if category in ev.get("categories", []):
+                if category == "REGULATORY_EVIDENCE" and not ev.get(
+                    "authoritative", False
+                ):
+                    continue
+                output[category].append(source.get("source_id"))
+
+    return output
+
+
+def validate_evidence_ids(ids, claim_type, research_result):
+    ids = [str(x) for x in (ids or [])]
+    source_map = evidence_source_map(research_result)
+    required_category = CLAIM_TO_CATEGORY.get(claim_type)
+    valid = []
+
+    for source_id in ids:
+        source = source_map.get(source_id)
+        if not source:
+            continue
+
+        ev = source.get("evaluation", {})
+        if ev.get("relevance_score", 0) < 60:
+            continue
+        if "IRRELEVANT" in ev.get("categories", []):
+            continue
+
+        if required_category:
+            if required_category not in ev.get("categories", []):
+                continue
+            if (
+                required_category == "REGULATORY_EVIDENCE"
+                and not ev.get("authoritative", False)
+            ):
+                continue
+
+        valid.append(source_id)
+
+    return valid
+
+
+# =========================================================
 # KILLER PER-IDEA SCHEMA
 # =========================================================
 
 claim_schema = obj(
     {
         "claim": {"type": "string"},
+        "claim_type": {"type": "string", "enum": CLAIM_TYPES},
         "status": {
             "type": "string",
             "enum": [
                 "VERIFIED_RISK",
                 "UNVERIFIED_RISK",
+                "EVIDENCE_GAP",
                 "UNKNOWN",
             ],
         },
@@ -1222,19 +1390,17 @@ KILLER_ONE_SCHEMA = obj(
         "idea_id": {"type": "string"},
         "research_status": {
             "type": "string",
-            "enum": [
-                "SUFFICIENT",
-                "INSUFFICIENT_EVIDENCE",
-                "RESEARCH_FAILED",
-            ],
+            "enum": ["SUFFICIENT", "INSUFFICIENT_EVIDENCE", "RESEARCH_FAILED"],
         },
         "top_risks": arr(claim_schema, 3, 3),
         "kill_shot": {"type": "string"},
+        "kill_shot_claim_type": {"type": "string", "enum": CLAIM_TYPES},
         "kill_shot_status": {
             "type": "string",
             "enum": [
                 "VERIFIED_RISK",
                 "UNVERIFIED_RISK",
+                "EVIDENCE_GAP",
                 "UNKNOWN",
             ],
         },
@@ -1245,47 +1411,51 @@ KILLER_ONE_SCHEMA = obj(
         "score_out_of_10": {"type": "integer", "minimum": 0, "maximum": 10},
         "decision": {
             "type": "string",
-            "enum": [
-                "SURVIVES",
-                "KILL IT",
-                "INSUFFICIENT EVIDENCE",
-                "RESEARCH FAILED",
-            ],
+            "enum": ["SURVIVES", "KILL IT", "INSUFFICIENT EVIDENCE", "RESEARCH FAILED"],
         },
     }
 )
 
 
 def enforce_killer_evidence(idea, research_result, data):
-    # Keep research state aligned with actual gate
     actual_status = research_result["research_status"]
     data["research_status"] = actual_status
 
-    # If research failed, model cannot kill or survive
     if actual_status == "RESEARCH_FAILED":
         data["decision"] = "RESEARCH FAILED"
         return data
 
-    # If evidence is insufficient, KILL requires a verified kill shot with evidence IDs
-    if actual_status == "INSUFFICIENT_EVIDENCE":
+    for risk in data["top_risks"]:
+        risk["evidence_ids"] = validate_evidence_ids(
+            risk.get("evidence_ids", []),
+            risk.get("claim_type", "OTHER"),
+            research_result,
+        )
+        if risk["status"] == "VERIFIED_RISK" and not risk["evidence_ids"]:
+            risk["status"] = "UNVERIFIED_RISK"
+        if risk["status"] == "EVIDENCE_GAP":
+            risk["evidence_ids"] = []
+
+    data["kill_shot_evidence_ids"] = validate_evidence_ids(
+        data.get("kill_shot_evidence_ids", []),
+        data.get("kill_shot_claim_type", "OTHER"),
+        research_result,
+    )
+
+    if data["kill_shot_status"] == "VERIFIED_RISK" and not data["kill_shot_evidence_ids"]:
+        data["kill_shot_status"] = "UNVERIFIED_RISK"
+    if data["kill_shot_status"] == "EVIDENCE_GAP":
+        data["kill_shot_evidence_ids"] = []
+
+    if data["decision"] == "KILL IT":
         if not (
             data["kill_shot_status"] == "VERIFIED_RISK"
             and len(data["kill_shot_evidence_ids"]) >= 1
         ):
             data["decision"] = "INSUFFICIENT EVIDENCE"
 
-    # Any VERIFIED claim must include evidence
-    for risk in data["top_risks"]:
-        if risk["status"] == "VERIFIED_RISK" and not risk["evidence_ids"]:
-            risk["status"] = "UNVERIFIED_RISK"
-
-    if (
-        data["kill_shot_status"] == "VERIFIED_RISK"
-        and not data["kill_shot_evidence_ids"]
-    ):
-        data["kill_shot_status"] = "UNVERIFIED_RISK"
-        if data["decision"] == "KILL IT":
-            data["decision"] = "INSUFFICIENT EVIDENCE"
+    if actual_status == "INSUFFICIENT_EVIDENCE" and data["decision"] == "SURVIVES":
+        data["decision"] = "INSUFFICIENT EVIDENCE"
 
     return data
 
@@ -1296,22 +1466,25 @@ def run_killer_one(idea, research_result, status):
 
 هاجم فكرة واحدة فقط.
 
-قواعد الأدلة:
-1. لا تكتب أي ادعاء تنظيمي أو تنافسي أو سعري كحقيقة إلا إذا دعمه Source ID.
-2. إذا لم يوجد Source ID مناسب: status = UNVERIFIED_RISK أو UNKNOWN.
-3. VERIFIED_RISK يجب أن يحتوي evidence_ids.
-4. لا تجعل غياب الدليل دليلاً على الفشل.
-5. إذا Research Status = INSUFFICIENT_EVIDENCE ولم يوجد Kill Shot موثق فعلاً:
-   decision = INSUFFICIENT EVIDENCE.
-6. RESEARCH FAILED يعني لا يجوز الحكم KILL/SURVIVES.
-
-KILL IT فقط إذا يوجد عيب بنيوي موثق يمكنه وحده تدمير الاقتصاديات أو قابلية التنفيذ.
+قواعد Evidence Lock الإلزامية:
+1. VERIFIED_RISK يحتاج Source ID من الفئة الصحيحة:
+   COMPETITION->DIRECT_COMPETITOR, PRICING->PRICING_EVIDENCE,
+   WTP->WTP_EVIDENCE, DISTRIBUTION->DISTRIBUTION_EVIDENCE,
+   REGULATION->REGULATORY_EVIDENCE authoritative, PLATFORM->PLATFORM_RISK.
+2. غياب Distribution/WTP/Pricing = EVIDENCE_GAP وليس VERIFIED_RISK.
+3. لا تستخدم Pricing source لإثبات فشل Distribution.
+4. لا تستخدم Direct Competitor source لإثبات ترخيص تنظيمي.
+5. توقع أن منصة قد تبني الميزة = UNVERIFIED_RISK ما لم يوجد PLATFORM_RISK evidence.
+6. KILL IT فقط إذا Kill Shot = VERIFIED_RISK مع Evidence IDs مطابقة للفئة.
+7. إذا البحث غير كافٍ ولم يوجد Kill Shot موثق: INSUFFICIENT EVIDENCE.
+8. RESEARCH FAILED يعني فشل تقني فعلي فقط.
 """
 
     packet = {
         "idea": idea,
         "research_gate": research_result["gate"],
         "research_status": research_result["research_status"],
+        "allowed_evidence_ids_by_category": evidence_ids_by_category(research_result),
         "evidence": evidence_packet(research_result),
     }
 
@@ -1319,40 +1492,72 @@ KILL IT فقط إذا يوجد عيب بنيوي موثق يمكنه وحده ت
         KILLER_MODEL,
         system,
         json.dumps(packet, ensure_ascii=False),
-        "killer_one_v8",
+        "killer_one_v82",
         KILLER_ONE_SCHEMA,
-        1300,
+        1400,
         f"KILLER — {idea['name']}",
         status,
         "none",
     )
 
     if result["ok"]:
-        result["data"] = enforce_killer_evidence(
-            idea, research_result, result["data"]
-        )
-
+        result["data"] = enforce_killer_evidence(idea, research_result, result["data"])
     return result
 
 
 # =========================================================
-# HUNTER REBUTTAL
+# HUNTER REBUTTAL EVIDENCE LOCK
 # =========================================================
+
+support_claim_schema = obj(
+    {
+        "claim": {"type": "string"},
+        "claim_type": {"type": "string", "enum": CLAIM_TYPES},
+        "status": {"type": "string", "enum": ["SUPPORTED", "UNVERIFIED", "EVIDENCE_GAP"]},
+        "evidence_ids": arr({"type": "string"}, 0, 5),
+    }
+)
 
 REBUTTAL_ONE_SCHEMA = obj(
     {
         "idea_id": {"type": "string"},
         "valid_objection": {"type": "string"},
+        "valid_objection_claim_type": {"type": "string", "enum": CLAIM_TYPES},
         "valid_objection_evidence_ids": arr({"type": "string"}, 0, 5),
         "disputed_objection": {"type": "string"},
+        "disputed_objection_claim_type": {"type": "string", "enum": CLAIM_TYPES},
+        "disputed_objection_evidence_ids": arr({"type": "string"}, 0, 5),
         "disputed_reason": {"type": "string"},
+        "defense_claims": arr(support_claim_schema, 0, 3),
         "evidence_needed": {"type": "string"},
-        "position": {
-            "type": "string",
-            "enum": ["DEFEND", "DROP", "NEEDS MORE EVIDENCE"],
-        },
+        "position": {"type": "string", "enum": ["DEFEND", "DROP", "NEEDS MORE EVIDENCE"]},
     }
 )
+
+
+def enforce_hunter_rebuttal(research_result, data):
+    data["valid_objection_evidence_ids"] = validate_evidence_ids(
+        data.get("valid_objection_evidence_ids", []),
+        data.get("valid_objection_claim_type", "OTHER"),
+        research_result,
+    )
+    data["disputed_objection_evidence_ids"] = validate_evidence_ids(
+        data.get("disputed_objection_evidence_ids", []),
+        data.get("disputed_objection_claim_type", "OTHER"),
+        research_result,
+    )
+
+    for claim in data.get("defense_claims", []):
+        claim["evidence_ids"] = validate_evidence_ids(
+            claim.get("evidence_ids", []),
+            claim.get("claim_type", "OTHER"),
+            research_result,
+        )
+        if claim["status"] == "SUPPORTED" and not claim["evidence_ids"]:
+            claim["status"] = "UNVERIFIED"
+        if claim["status"] == "EVIDENCE_GAP":
+            claim["evidence_ids"] = []
+    return data
 
 
 def run_rebuttal_one(idea, research_result, killer_data, status):
@@ -1361,32 +1566,40 @@ def run_rebuttal_one(idea, research_result, killer_data, status):
 
 هذه فرصتك الوحيدة للرد على Killer لفكرة واحدة.
 
-لا تضف فكرة جديدة.
-لا تنكر دليلاً موثقاً بلا سبب.
-لا تعتبر ادعاء غير موثق حقيقة.
-DROP أفضل من الدفاع عن عيب قاتل موثق.
-NEEDS MORE EVIDENCE أفضل من التخمين.
+Evidence Lock:
+- ممنوع إدخال حقيقة سوقية/سعرية/تنظيمية جديدة بلا Source ID مناسب.
+- Pricing claim يحتاج PRICING_EVIDENCE.
+- Distribution claim يحتاج DISTRIBUTION_EVIDENCE.
+- Regulatory claim يحتاج authoritative REGULATORY_EVIDENCE.
+- إذا لا يوجد الدليل: UNVERIFIED أو EVIDENCE_GAP.
+- disputed_reason تفسير منطقي للأدلة فقط، وليس مكاناً لاختراع facts.
+- DROP أفضل من الدفاع عن عيب قاتل موثق.
+- NEEDS MORE EVIDENCE أفضل من التخمين.
 """
 
     packet = {
         "idea": idea,
         "research_status": research_result["research_status"],
         "research_gate": research_result["gate"],
+        "allowed_evidence_ids_by_category": evidence_ids_by_category(research_result),
         "evidence": evidence_packet(research_result),
         "killer": killer_data,
     }
 
-    return call_json(
+    result = call_json(
         HUNTER_MODEL,
         system,
         json.dumps(packet, ensure_ascii=False),
-        "hunter_rebuttal_one_v8",
+        "hunter_rebuttal_one_v82",
         REBUTTAL_ONE_SCHEMA,
-        700,
+        850,
         f"HUNTER REBUTTAL — {idea['name']}",
         status,
         "low",
     )
+    if result["ok"]:
+        result["data"] = enforce_hunter_rebuttal(research_result, result["data"])
+    return result
 
 
 # =========================================================
@@ -1398,25 +1611,18 @@ KILLER_FINAL_ONE_SCHEMA = obj(
         "idea_id": {"type": "string"},
         "decision": {
             "type": "string",
-            "enum": [
-                "SURVIVES",
-                "KILL IT",
-                "INSUFFICIENT EVIDENCE",
-                "RESEARCH FAILED",
-            ],
+            "enum": ["SURVIVES", "KILL IT", "INSUFFICIENT EVIDENCE", "RESEARCH FAILED"],
         },
         "remaining_problem": {"type": "string"},
         "wtp_real": {"type": "boolean"},
         "distribution_real": {"type": "boolean"},
-        "feature_or_company": {
-            "type": "string",
-            "enum": ["FEATURE", "COMPANY", "UNCLEAR"],
-        },
+        "feature_or_company": {"type": "string", "enum": ["FEATURE", "COMPANY", "UNCLEAR"]},
         "final_score_out_of_10": {"type": "integer", "minimum": 0, "maximum": 10},
         "decisive_claim": {"type": "string"},
+        "decisive_claim_type": {"type": "string", "enum": CLAIM_TYPES},
         "decisive_claim_status": {
             "type": "string",
-            "enum": ["VERIFIED_RISK", "UNVERIFIED_RISK", "UNKNOWN"],
+            "enum": ["VERIFIED_RISK", "UNVERIFIED_RISK", "EVIDENCE_GAP", "UNKNOWN"],
         },
         "decisive_evidence_ids": arr({"type": "string"}, 0, 5),
         "evidence_gap": {"type": "string"},
@@ -1426,16 +1632,20 @@ KILLER_FINAL_ONE_SCHEMA = obj(
 
 def enforce_final_decision(research_result, data):
     actual_status = research_result["research_status"]
-
     if actual_status == "RESEARCH_FAILED":
         data["decision"] = "RESEARCH FAILED"
         return data
 
-    if (
-        data["decisive_claim_status"] == "VERIFIED_RISK"
-        and not data["decisive_evidence_ids"]
-    ):
+    data["decisive_evidence_ids"] = validate_evidence_ids(
+        data.get("decisive_evidence_ids", []),
+        data.get("decisive_claim_type", "OTHER"),
+        research_result,
+    )
+
+    if data["decisive_claim_status"] == "VERIFIED_RISK" and not data["decisive_evidence_ids"]:
         data["decisive_claim_status"] = "UNVERIFIED_RISK"
+    if data["decisive_claim_status"] == "EVIDENCE_GAP":
+        data["decisive_evidence_ids"] = []
 
     if data["decision"] == "KILL IT":
         if not (
@@ -1445,34 +1655,29 @@ def enforce_final_decision(research_result, data):
             data["decision"] = "INSUFFICIENT EVIDENCE"
 
     if actual_status == "INSUFFICIENT_EVIDENCE" and data["decision"] == "SURVIVES":
-        # Insufficient evidence cannot become a true survivor.
         data["decision"] = "INSUFFICIENT EVIDENCE"
-
     return data
 
 
-def run_killer_final_one(
-    idea,
-    research_result,
-    killer_data,
-    rebuttal_data,
-    status,
-):
+def run_killer_final_one(idea, research_result, killer_data, rebuttal_data, status):
     system = """
 أنت THE KILLER في الجولة النهائية لفكرة واحدة.
 
-قواعد الحكم:
-- KILL IT يحتاج Decisive Claim موثقاً بـ evidence_ids.
+Evidence Lock:
+- KILL IT يحتاج Decisive Claim = VERIFIED_RISK.
+- Evidence IDs يجب أن تكون من الفئة الصحيحة للـclaim.
+- Missing Distribution/Pricing/WTP = EVIDENCE_GAP وليس Verified Failure.
 - إذا البحث غير كافٍ ولا يوجد عيب قاتل موثق: INSUFFICIENT EVIDENCE.
-- إذا البحث فشل: RESEARCH FAILED.
-- SURVIVES يحتاج بحثاً كافياً وعدم وجود Kill Shot موثق.
-- لا تحول فرضية أو توقع ("قد تضيف Stripe الميزة") إلى حقيقة.
+- إذا البحث فشل تقنياً: RESEARCH FAILED.
+- SURVIVES يحتاج Research Status = SUFFICIENT وعدم وجود Kill Shot موثق.
+- لا تحول فرضية أو توقع إلى حقيقة.
 """
 
     packet = {
         "idea": idea,
         "research_status": research_result["research_status"],
         "research_gate": research_result["gate"],
+        "allowed_evidence_ids_by_category": evidence_ids_by_category(research_result),
         "evidence": evidence_packet(research_result),
         "killer_first": killer_data,
         "hunter_rebuttal": rebuttal_data,
@@ -1482,21 +1687,16 @@ def run_killer_final_one(
         KILLER_MODEL,
         system,
         json.dumps(packet, ensure_ascii=False),
-        "killer_final_one_v8",
+        "killer_final_one_v82",
         KILLER_FINAL_ONE_SCHEMA,
-        850,
+        950,
         f"KILLER FINAL — {idea['name']}",
         status,
         "none",
     )
-
     if result["ok"]:
-        result["data"] = enforce_final_decision(
-            research_result, result["data"]
-        )
-
+        result["data"] = enforce_final_decision(research_result, result["data"])
     return result
-
 
 # =========================================================
 # PER-IDEA RED TEAM
@@ -1874,7 +2074,7 @@ def build_report(
     objection,
     verdict,
 ):
-    output = ["MD INVESTMENT RESEARCH COUNCIL — V8.1", "\nIDEAS"]
+    output = ["MD INVESTMENT RESEARCH COUNCIL — V8.2", "\nIDEAS"]
 
     for idea in ideas:
         output += [
@@ -2079,16 +2279,16 @@ st.caption(f"Build: {BUILD_ID}")
 
 st.info(
     """
-**V8.1 — Evidence First + Hunter Top-Up**
+**V8.2 — Evidence Lock + Targeted Re-Search**
 
 الجديد:
-- تعريف Job-to-be-Done لكل فكرة.
-- Relevance Judge لكل مصدر.
-- Research Gate يعتمد على جودة الأدلة لا عدد الروابط فقط.
-- إعادة بحث تلقائية إذا كانت فئات الأدلة ناقصة.
-- Killer يجب أن يربط الادعاءات الخطرة بـ Source IDs.
-- لا يسمح KILL IT بسبب ادعاء غير موثق.
-- حالات البحث: SUFFICIENT / INSUFFICIENT EVIDENCE / RESEARCH FAILED.
+- RESEARCH_FAILED فقط عند فشل تقني فعلي؛ ضعف الأدلة = INSUFFICIENT EVIDENCE.
+- كل claim له نوع: Competition / Pricing / WTP / Distribution / Regulation / Platform.
+- Source ID لا يُقبل إلا إذا كان من فئة الأدلة الصحيحة للـclaim.
+- غياب Pricing/WTP/Distribution = EVIDENCE_GAP وليس VERIFIED_RISK.
+- Hunter Rebuttal ممنوع من اختراع facts جديدة بلا Evidence IDs مناسبة.
+- إعادة بحث مستهدفة حتى 3 جولات، فقط للعناصر الناقصة في Research Gate.
+- KILL IT يحتاج Kill Shot موثقاً بدليل مطابق للفئة.
 """
 )
 
@@ -2501,7 +2701,7 @@ if st.session_state.verdict:
     st.download_button(
         "📝 تحميل التقرير TXT",
         report.encode("utf-8"),
-        "MD_Investment_Research_V8_1.txt",
+        "MD_Investment_Research_V8_2.txt",
         "text/plain",
         use_container_width=True,
     )
@@ -2510,7 +2710,7 @@ if st.session_state.verdict:
         st.download_button(
             "📄 تحميل التقرير PDF",
             create_pdf(report),
-            "MD_Investment_Research_V8_1.pdf",
+            "MD_Investment_Research_V8_2.pdf",
             "application/pdf",
             use_container_width=True,
         )
