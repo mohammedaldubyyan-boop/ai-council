@@ -1,11 +1,13 @@
 import os
 import re
+import json
 import glob
 import time
 import math
+import difflib
 import streamlit as st
 
-from openai import OpenAI
+from groq import Groq
 from fpdf import FPDF
 
 
@@ -13,7 +15,7 @@ from fpdf import FPDF
 # BUILD
 # =========================================================
 
-BUILD_ID = "GROQ-DEBATE-4-NO-COMPOUND"
+BUILD_ID = "V5-RESEARCH-COUNCIL"
 
 
 # =========================================================
@@ -21,19 +23,20 @@ BUILD_ID = "GROQ-DEBATE-4-NO-COMPOUND"
 # =========================================================
 
 st.set_page_config(
-    page_title="MD AI Council",
+    page_title="MD Investment Council",
     page_icon="🧠",
     layout="wide"
 )
 
 
 # =========================================================
-# ARABIC RTL
+# RTL
 # =========================================================
 
 st.markdown(
     """
     <style>
+
     .stApp {
         direction: rtl;
     }
@@ -56,6 +59,7 @@ st.markdown(
         direction: rtl !important;
         text-align: right !important;
     }
+
     </style>
     """,
     unsafe_allow_html=True
@@ -66,421 +70,264 @@ st.markdown(
 # GROQ
 # =========================================================
 
-client = OpenAI(
-    api_key=st.secrets["GROQ_API_KEY"],
-    base_url="https://api.groq.com/openai/v1",
-    timeout=120.0,
-    max_retries=0
+client = Groq(
+    api_key=st.secrets["GROQ_API_KEY"]
 )
 
 
 # =========================================================
 # MODELS
-# =========================================================
-
-HUNTER_MODEL = {
-    "id": "openai/gpt-oss-120b",
-    "reasoning": "low"
-}
-
-KILLER_MODEL = {
-    "id": "qwen/qwen3.8-27b",
-    "reasoning": "none"
-}
-
-OPERATOR_MODEL = {
-    "id": "qwen/qwen3.6-27b",
-    "reasoning": "none"
-}
-
-
-# =========================================================
-# FREE TIER THROTTLING
 #
-# نفس الموديل لا نعيد استخدامه فوراً
+# 3 وكلاء = 3 موديلات مختلفة
+# =========================================================
+
+HUNTER_MODEL = "openai/gpt-oss-120b"
+
+KILLER_MODEL = "qwen/qwen3.8-27b"
+
+OPERATOR_MODEL = "openai/gpt-oss-20b"
+
+RESEARCH_MODEL = "groq/compound-mini"
+
+
+# =========================================================
+# MODEL USAGE CONTROL
 # =========================================================
 
 MODEL_LAST_USED = {}
 
-MIN_SECONDS_BETWEEN_SAME_MODEL = 28
+MIN_MODEL_GAP = {
+    HUNTER_MODEL: 25,
+    KILLER_MODEL: 25,
+    OPERATOR_MODEL: 25,
+    RESEARCH_MODEL: 3
+}
 
 
 # =========================================================
-# HUNTER INSTRUCTIONS
-# =========================================================
-
-HUNTER_INSTRUCTIONS = """
-أنت THE HUNTER.
-
-أنت رائد أعمال وباحث فرص اقتصادية.
-
-الهدف ليس العثور على فكرة AI مثيرة.
-الهدف العثور على مشروع يمكن أن يولد مالاً حقيقياً
-بأقل اعتماد ممكن على صاحبه.
-
-الأولوية هي:
-
-1. مشكلة تكلف العميل مالاً.
-2. willingness-to-pay واضح.
-3. عملية إلزامية أو متكررة.
-4. وصول واضح للمشتري.
-5. أتمتة عالية.
-6. سرعة الوصول لأول عملية دفع.
-7. أقل مصروف قبل إثبات الدفع.
-8. عدم الحاجة لفريق في البداية.
-9. عدم الحاجة لجمهور كبير.
-10. عدم بناء شيء لأشهر قبل اختبار الدفع.
-
-لا تعتبر AI ميزة تنافسية بحد ذاته.
-
-تجنب:
-- AI wrappers.
-- dashboards العامة.
-- أدوات يمكن لـChatGPT العادي تنفيذها بما يكفي.
-- micro-SaaS بلا سبب قوي للدفع.
-- أفكار تحتاج مبيعات بشرية ثقيلة.
-- أفكار تحتاج دعماً يومياً من صاحب المشروع.
-
-قدم بحد أقصى 5 أفكار.
-
-لكل فكرة يجب أن تذكر باختصار:
-
-1. من يدفع؟
-2. لماذا يدفع؟
-3. كم يدفع تقريباً؟
-4. ماذا يحدث اليوم بدون المنتج؟
-5. البديل الحالي؟
-6. لماذا نحن أفضل؟
-7. كيف نصل لأول 10 عملاء؟
-8. ماذا يمكن أتمتته؟
-9. العمل البشري المتبقي؟
-10. لماذا الآن؟
-
-لا تختر WINNER.
-
-لا تقم بتقييم 100 نقطة بعد.
-
-مهم:
-كن كثيفاً ومباشراً.
-لا تتجاوز تقريباً 900 كلمة.
-"""
-
-
-# =========================================================
-# KILLER INSTRUCTIONS
-# =========================================================
-
-KILLER_INSTRUCTIONS = """
-أنت THE KILLER.
-
-أنت مستثمر متشائم ومدير منافس.
-هدفك منعنا من بناء المشروع الخطأ.
-
-لا تقترح أفكاراً جديدة.
-
-هاجم أفكار Hunter من ناحية:
-
-- المنافسون المباشرون.
-- المنتجات المجانية.
-- الحلول الموجودة داخل المنصة نفسها.
-- هل ChatGPT/Claude يستطيع أداء المهمة بما يكفي؟
-- CAC.
-- willingness-to-pay.
-- churn.
-- صعوبة الوصول للمشتري.
-- legal/regulatory risk.
-- data availability.
-- platform/API dependency.
-- privacy/security.
-- liability.
-- support burden.
-- هل هي Feature وليست Company؟
-- سهولة التقليد.
-- ضعف moat.
-- الحاجة لمبيعات بشرية.
-- الحاجة لخبرة غير موجودة.
-- صغر السوق.
-- ضعف التكرار.
-
-لكل فكرة أعط:
-
-1. أقوى 3 أسباب للفشل.
-2. Kill Shot واحد.
-3. ما الدليل الذي لو وجدناه نرفضها فوراً؟
-4. تقييم من 10 بعد الهجوم.
-
-إذا ماتت الفكرة اكتب بوضوح:
-
-KILL IT
-
-ممنوع المجاملة.
-"""
-
-
-# =========================================================
-# OPERATOR INSTRUCTIONS
-# =========================================================
-
-OPERATOR_INSTRUCTIONS = """
-أنت THE OPERATOR / ECONOMIST.
-
-أنت CTO + CFO + Growth Operator.
-
-وظيفتك الحكم فقط على الأفكار التي نجت.
-
-لا تولد أفكاراً جديدة.
-
-نظام التقييم من 100:
-
-1. Severity of Problem — 15
-2. Willingness to Pay — 15
-3. Distribution — 15
-4. Automation — 15
-5. Recurring / Repeat Usage — 10
-6. Competition — 10
-7. Moat / Defensibility — 5
-8. Speed to Revenue — 10
-9. Stack Fit — 5
-
-المجموع = 100.
-
-لا ترفع الدرجة بسبب:
-- TAM كبير.
-- AI ترند.
-- سهولة البرمجة.
-- وجود API.
-- وجود منافسين مربحين فقط.
-
-WINNER ممنوع إلا إذا تجاوز 85/100 فعلاً بعد Red Team.
-
-إذا أفضل فكرة حصلت على 78:
-قل 78.
-
-إذا لا توجد فكرة تستحق 85:
-قل NO WINNER.
-
-لكل فكرة نجت قيّم:
-
-ECONOMICS:
-- Price.
-- Gross margin.
-- recurring revenue.
-- LTV.
-- CAC.
-- عدد العملاء المطلوب لـ:
-  $1k MRR
-  $5k MRR
-  $10k MRR
-
-BUILD:
-- ماذا نبني؟
-- ماذا نربط؟
-- ماذا لا نحتاج بناءه؟
-- تكلفة التشغيل.
-- هل MVP خلال أيام؟
-
-AUTOMATION:
-- نسبة الأتمتة %.
-- أين يحتاج تدخل محمد؟
-
-DISTRIBUTION:
-لا تقبل إجابات عامة مثل:
-SEO
-social media
-content
-ads
-
-يجب تحديد قناة واضحة للوصول لأول عميل يدفع.
-
-اختبار الحقيقة لكل فكرة 80+:
-
-1. لماذا ليست Micro-SaaS سيموت عند $0 MRR؟
-2. لماذا يعطي عميل غريب بطاقته لنا؟
-3. لماذا لا يستخدم البديل الموجود؟
-4. لماذا يحتاجها الآن؟
-5. أقصر طريق لأول payment_succeeded؟
-
-الجدول النهائي:
-
-| Rank | Idea | Score | First Buyer | Price | Automation | Fastest Test | Biggest Risk |
-
-إذا يوجد WINNER فوق 85، أعط:
-
-1. الجملة الواحدة التي تشرح المشروع.
-2. العميل المحدد جداً.
-3. المشكلة المالية.
-4. لماذا الآن.
-5. المنتج.
-6. كيف يدخل المال.
-7. السعر الأولي.
-8. acquisition channel.
-9. automation architecture.
-10. دور DeepSeek.
-11. دور Replit.
-12. دور Stripe.
-13. دور Composio إن احتجناه.
-14. العمل المتبقي على محمد.
-15. المنافسون المباشرون.
-16. لماذا لا يقتلوننا.
-17. Kill Shot.
-18. اختبار 7 أيام.
-19. معيار BUILD.
-20. معيار KILL.
-
-لا تستخدم لغة تحفيزية.
-"""
-
-
-# =========================================================
-# HELPERS
-# =========================================================
-
-def extract_content(content):
-
-    if content is None:
-        return ""
-
-    if isinstance(content, str):
-        return content.strip()
-
-    if isinstance(content, list):
-
-        pieces = []
-
-        for part in content:
-
-            if isinstance(part, str):
-                pieces.append(part)
-
-            elif isinstance(part, dict):
-
-                text = part.get("text")
-
-                if text:
-                    pieces.append(str(text))
-
-            else:
-
-                text = getattr(part, "text", None)
-
-                if text:
-                    pieces.append(str(text))
-
-        return "\n".join(pieces).strip()
-
-    return str(content).strip()
-
-
-# =========================================================
-# LOCAL BRIEF PREPARATION
+# BLACKLIST
 #
-# لا نستخدم AI هنا.
-#
-# إذا المستخدم لصق البرومبت القديم،
-# نحذف قسم الوكلاء لأن التطبيق يحتوي عليه أصلاً.
+# الأفكار التي رفضتها مسبقاً
 # =========================================================
 
-def prepare_case_brief(text):
+REJECTED_IDEAS = [
+    "Ask Mohammed",
+    "Company Profile Generator",
+    "Proposal contract signature deposit tools",
+    "Ad spend monitoring optimization",
+    "WPS file validator generator",
+    "Saudi cosmetic compliance checker",
+    "New business commercial registration lead alerts",
+    "General tender RFP AI",
+    "Vendor prequalification autofill",
+    "Amazon Noon profitability dashboard",
+    "E-commerce compliance scanner",
+    "Generic SEO content refresh tools",
+    "Instant quote widgets",
+    "Generic invoice collection agents",
+    "Warranty management",
+    "COD reconciliation",
+    "Freight invoice audit",
+    "LC document pre-check",
+    "Generic RFQ comparison",
+    "Gmail to Sheets extraction",
+    "Stripe MRR verification",
+    "App store privacy declaration",
+    "General SaaS subscription monitoring",
+    "Generic scope creep detection",
+    "Noon warranty workflow automation"
+]
 
-    text = text.strip()
 
-    original_length = len(text)
+# =========================================================
+# مفاهيم ممنوعة
+#
+# تمنع تغيير الاسم فقط للهروب من القائمة
+# =========================================================
 
-    markers = [
-        "\n# الوكلاء",
-        "\n## الوكيل الأول",
-        "\n# قواعد المناظرة",
-        "\n# نظام التقييم",
-        "\n# شرط النجاح",
-        "\n# اختبار الحقيقة",
-        "\n# المرحلة النهائية"
+REJECTED_CONCEPTS = {
+
+    "freight_invoice_audit": [
+        "freight",
+        "shipping invoice",
+        "shipment invoice",
+        "فواتير الشحن",
+        "فاتورة الشحن",
+        "تدقيق الشحن",
+        "shipping audit"
+    ],
+
+    "invoice_collection": [
+        "invoice collection",
+        "collect invoices",
+        "تحصيل الفواتير",
+        "invoice chasing"
+    ],
+
+    "rfq_comparison": [
+        "rfq comparison",
+        "compare quotations",
+        "مقارنة عروض الأسعار",
+        "مقارنة rfq"
+    ],
+
+    "tender_rfp": [
+        "tender ai",
+        "rfp ai",
+        "tender analysis",
+        "تحليل المناقصات"
+    ],
+
+    "warranty": [
+        "warranty management",
+        "warranty workflow",
+        "إدارة الضمان",
+        "ضمان المنتجات"
+    ],
+
+    "seo_content": [
+        "seo content",
+        "content refresh",
+        "تحديث المحتوى",
+        "seo refresh"
+    ],
+
+    "saas_monitoring": [
+        "subscription monitoring",
+        "saas monitoring",
+        "مراقبة الاشتراكات"
+    ],
+
+    "scope_creep": [
+        "scope creep",
+        "تغير نطاق المشروع",
+        "تجاوز نطاق المشروع"
     ]
-
-    cut_positions = []
-
-    for marker in markers:
-
-        position = text.find(marker)
-
-        if position != -1:
-            cut_positions.append(position)
-
-    removed_protocol = False
-
-    if cut_positions:
-
-        first_cut = min(cut_positions)
-
-        text = text[:first_cut]
-
-        removed_protocol = True
-
-
-    # إزالة فراغات مبالغ فيها
-    text = re.sub(
-        r"\n{4,}",
-        "\n\n\n",
-        text
-    )
-
-
-    # حد أمان
-    MAX_CHARS = 14000
-
-    trimmed = False
-
-    if len(text) > MAX_CHARS:
-
-        # نحافظ على البداية والنهاية
-        text = (
-            text[:10500]
-            + "\n\n[تم اختصار جزء من النص تلقائياً]\n\n"
-            + text[-3000:]
-        )
-
-        trimmed = True
-
-
-    return {
-        "text": text,
-        "removed_protocol": removed_protocol,
-        "trimmed": trimmed,
-        "original_length": original_length,
-        "final_length": len(text)
-    }
+}
 
 
 # =========================================================
-# TRUNCATE BETWEEN AGENTS
+# NORMALIZATION
 # =========================================================
 
-def compact_text(text, max_chars):
+def normalize_text(text):
 
     if not text:
         return ""
 
-    text = text.strip()
+    text = text.lower()
 
-    if len(text) <= max_chars:
-        return text
+    text = re.sub(
+        r"[^a-z0-9\u0600-\u06ff\s]",
+        " ",
+        text
+    )
 
-    return (
-        text[:max_chars]
-        + "\n\n[تم اختصار بقية الرد لتقليل استهلاك الـtokens]"
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    )
+
+    return text.strip()
+
+
+# =========================================================
+# LOCAL BLACKLIST CHECK
+# =========================================================
+
+def local_blacklist_check(idea):
+
+    combined = normalize_text(
+        " ".join(
+            [
+                idea.get("name", ""),
+                idea.get("one_liner", ""),
+                idea.get("product", ""),
+                idea.get("problem", "")
+            ]
+        )
     )
 
 
+    # -----------------------------------------
+    # exact-ish similarity
+    # -----------------------------------------
+
+    for rejected in REJECTED_IDEAS:
+
+        rejected_normalized = normalize_text(
+            rejected
+        )
+
+        ratio = difflib.SequenceMatcher(
+            None,
+            combined,
+            rejected_normalized
+        ).ratio()
+
+
+        if (
+            rejected_normalized in combined
+            or ratio >= 0.72
+        ):
+
+            return {
+                "blocked": True,
+                "reason": (
+                    f"تشابه مباشر مع فكرة مرفوضة: "
+                    f"{rejected}"
+                )
+            }
+
+
+    # -----------------------------------------
+    # concept detection
+    # -----------------------------------------
+
+    for concept, phrases in REJECTED_CONCEPTS.items():
+
+        hits = []
+
+        for phrase in phrases:
+
+            if normalize_text(phrase) in combined:
+
+                hits.append(
+                    phrase
+                )
+
+
+        if hits:
+
+            return {
+                "blocked": True,
+                "reason": (
+                    f"تشابه مفاهيمي مع قائمة مرفوضة "
+                    f"({concept}): "
+                    + ", ".join(hits)
+                )
+            }
+
+
+    return {
+        "blocked": False,
+        "reason": ""
+    }
+
+
 # =========================================================
-# RATE LIMIT PARSER
+# RATE LIMIT
 # =========================================================
 
-def get_retry_seconds(error_text):
+def retry_seconds(error_text):
 
     patterns = [
         r"try again in\s+([0-9.]+)s",
         r"retry after\s+([0-9.]+)",
         r"retry-after[^0-9]*([0-9.]+)"
     ]
+
 
     for pattern in patterns:
 
@@ -490,150 +337,158 @@ def get_retry_seconds(error_text):
             re.IGNORECASE
         )
 
+
         if match:
 
             try:
 
-                seconds = float(
-                    match.group(1)
-                )
-
                 return max(
                     3,
-                    math.ceil(seconds) + 3
+                    math.ceil(
+                        float(
+                            match.group(1)
+                        )
+                    ) + 3
                 )
 
             except:
                 pass
 
+
     return 12
 
 
 # =========================================================
-# COOLDOWN FOR SAME MODEL
+# MODEL COOLDOWN
 # =========================================================
 
 def wait_for_model(
     model,
-    stage_name,
-    status_box
+    stage,
+    status
 ):
 
-    previous = MODEL_LAST_USED.get(model)
+    last = MODEL_LAST_USED.get(
+        model
+    )
 
-    if previous is None:
+
+    if last is None:
         return
 
-    elapsed = time.time() - previous
+
+    gap = MIN_MODEL_GAP.get(
+        model,
+        10
+    )
+
+
+    elapsed = (
+        time.time()
+        - last
+    )
+
 
     remaining = (
-        MIN_SECONDS_BETWEEN_SAME_MODEL
-        - elapsed
+        gap - elapsed
     )
+
 
     if remaining > 0:
 
-        wait_seconds = math.ceil(
+        seconds = math.ceil(
             remaining
         )
 
-        status_box.warning(
-            f"⏳ {stage_name}: "
-            f"انتظار {wait_seconds} ثانية "
-            f"لحماية الحد المجاني لـGroq..."
+
+        status.warning(
+            f"⏳ {stage}: "
+            f"انتظار {seconds} ثانية "
+            f"لحماية الحد المجاني..."
         )
+
 
         time.sleep(
-            wait_seconds
+            seconds
         )
 
 
 # =========================================================
-# MODEL CALL
+# JSON CALL
+#
+# Structured Outputs strict:true
 # =========================================================
 
-def call_model(
-    model_config,
-    instructions,
-    task,
+def call_json(
+    model,
+    system_prompt,
+    user_prompt,
+    schema_name,
+    schema,
     max_tokens,
-    stage_name,
-    status_box,
+    stage,
+    status,
+    reasoning="none",
     retries=4
 ):
 
-    model = model_config["id"]
-
-    reasoning = model_config.get(
-        "reasoning"
-    )
-
-
     wait_for_model(
         model,
-        stage_name,
-        status_box
+        stage,
+        status
     )
 
 
     errors = []
 
 
-    for attempt in range(retries):
+    for attempt in range(
+        retries
+    ):
 
         try:
-
-            full_prompt = f"""
-ROLE / RULES:
-
-{instructions}
-
-====================================
-
-CURRENT TASK:
-
-{task}
-"""
-
-
-            extra_body = {}
-
-
-            if reasoning:
-
-                extra_body[
-                    "reasoning_effort"
-                ] = reasoning
-
-                extra_body[
-                    "reasoning_format"
-                ] = "hidden"
-
 
             kwargs = {
 
                 "model": model,
 
-                # Groq ينصح بتبسيط الـprompt،
-                # لذلك نجمع الدور والمهمة في رسالة واحدة.
                 "messages": [
                     {
+                        "role": "system",
+                        "content": system_prompt
+                    },
+                    {
                         "role": "user",
-                        "content": full_prompt
+                        "content": user_prompt
                     }
                 ],
 
-                "max_completion_tokens": max_tokens,
+                "temperature": 0.3,
 
-                "temperature": 0.5
+                "max_completion_tokens": (
+                    max_tokens
+                ),
+
+                "response_format": {
+                    "type": "json_schema",
+
+                    "json_schema": {
+
+                        "name": schema_name,
+
+                        "strict": True,
+
+                        "schema": schema
+                    }
+                }
             }
 
 
-            if extra_body:
+            if reasoning:
 
                 kwargs[
-                    "extra_body"
-                ] = extra_body
+                    "reasoning_effort"
+                ] = reasoning
 
 
             response = (
@@ -644,27 +499,152 @@ CURRENT TASK:
             )
 
 
-            if not response.choices:
+            MODEL_LAST_USED[
+                model
+            ] = time.time()
+
+
+            content = (
+                response
+                .choices[0]
+                .message
+                .content
+            )
+
+
+            if not content:
 
                 errors.append(
-                    f"{model}: no choices returned"
+                    f"{model}: empty JSON"
                 )
 
                 continue
 
 
-            choice = response.choices[0]
+            return {
+                "ok": True,
+                "data": json.loads(content),
+                "error": None
+            }
 
 
-            content = extract_content(
-                choice.message.content
+        except Exception as e:
+
+            error_text = str(e)
+
+            errors.append(
+                error_text
             )
 
 
-            finish_reason = getattr(
-                choice,
-                "finish_reason",
-                None
+            if (
+                "429" in error_text
+                or "rate_limit" in error_text.lower()
+            ):
+
+                seconds = retry_seconds(
+                    error_text
+                )
+
+
+                status.warning(
+                    f"⏳ {stage}: "
+                    f"Groq طلب انتظار "
+                    f"{seconds} ثانية..."
+                )
+
+
+                time.sleep(
+                    seconds
+                )
+
+                continue
+
+
+            if (
+                "413" in error_text
+                or "too large" in error_text.lower()
+            ):
+
+                break
+
+
+            time.sleep(2)
+
+
+    return {
+        "ok": False,
+        "data": None,
+        "error": "\n\n".join(errors)
+    }
+
+
+# =========================================================
+# NORMAL TEXT CALL
+# =========================================================
+
+def call_text(
+    model,
+    system_prompt,
+    user_prompt,
+    max_tokens,
+    stage,
+    status,
+    reasoning="none",
+    retries=4
+):
+
+    wait_for_model(
+        model,
+        stage,
+        status
+    )
+
+
+    errors = []
+
+
+    for attempt in range(
+        retries
+    ):
+
+        try:
+
+            kwargs = {
+
+                "model": model,
+
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": system_prompt
+                    },
+                    {
+                        "role": "user",
+                        "content": user_prompt
+                    }
+                ],
+
+                "temperature": 0.3,
+
+                "max_completion_tokens": (
+                    max_tokens
+                )
+            }
+
+
+            if reasoning:
+
+                kwargs[
+                    "reasoning_effort"
+                ] = reasoning
+
+
+            response = (
+                client
+                .chat
+                .completions
+                .create(**kwargs)
             )
 
 
@@ -673,20 +653,25 @@ CURRENT TASK:
             ] = time.time()
 
 
+            content = (
+                response
+                .choices[0]
+                .message
+                .content
+            )
+
+
             if content:
 
                 return {
                     "ok": True,
-                    "text": content,
-                    "model": model,
-                    "finish_reason": finish_reason,
+                    "text": content.strip(),
                     "error": None
                 }
 
 
             errors.append(
-                f"{model}: empty response | "
-                f"finish_reason={finish_reason}"
+                f"{model}: empty response"
             )
 
 
@@ -695,51 +680,31 @@ CURRENT TASK:
             error_text = str(e)
 
             errors.append(
-                f"{model}: {error_text}"
+                error_text
             )
 
 
-            # 429
             if (
                 "429" in error_text
                 or "rate_limit" in error_text.lower()
             ):
 
-                wait_seconds = get_retry_seconds(
+                seconds = retry_seconds(
                     error_text
                 )
 
-                status_box.warning(
-                    f"⏳ {stage_name}: "
-                    f"Groq طلب انتظار "
-                    f"{wait_seconds} ثانية. "
-                    f"سيكمل التطبيق تلقائياً..."
+
+                status.warning(
+                    f"⏳ {stage}: "
+                    f"انتظار {seconds} ثانية..."
                 )
 
+
                 time.sleep(
-                    wait_seconds
+                    seconds
                 )
 
                 continue
-
-
-            # 413
-            if (
-                "413" in error_text
-                or "request_too_large" in error_text.lower()
-            ):
-
-                return {
-                    "ok": False,
-                    "text": "",
-                    "model": model,
-                    "error": (
-                        "الطلب أكبر من المسموح. "
-                        "هذا يعني أن إحدى مراحل "
-                        "التطبيق أرسلت سياقاً كبيراً جداً.\n\n"
-                        + error_text
-                    )
-                }
 
 
             time.sleep(2)
@@ -748,490 +713,1703 @@ CURRENT TASK:
     return {
         "ok": False,
         "text": "",
-        "model": model,
         "error": "\n\n".join(errors)
     }
 
 
 # =========================================================
-# 1. HUNTER
+# PREPARE BRIEF LOCALLY
 # =========================================================
 
-def hunter_generate(
+def prepare_case_brief(
+    original
+):
+
+    text = original.strip()
+
+
+    # البروتوكول موجود في الكود،
+    # فلا داعي لإرساله للنماذج.
+    protocol_markers = [
+        "\n# الوكلاء",
+        "\n## الوكيل الأول",
+        "\n# قواعد المناظرة",
+        "\n# نظام التقييم",
+        "\n# شرط النجاح",
+        "\n# اختبار الحقيقة",
+        "\n# المرحلة النهائية"
+    ]
+
+
+    cuts = []
+
+
+    for marker in protocol_markers:
+
+        position = text.find(
+            marker
+        )
+
+        if position != -1:
+
+            cuts.append(
+                position
+            )
+
+
+    if cuts:
+
+        text = text[
+            :min(cuts)
+        ]
+
+
+    # safety cap
+    if len(text) > 13000:
+
+        text = (
+            text[:10000]
+            + "\n\n[...]\n\n"
+            + text[-2500:]
+        )
+
+
+    return text
+
+
+# =========================================================
+# HUNTER SCHEMA
+# =========================================================
+
+HUNTER_SCHEMA = {
+
+    "type": "object",
+
+    "properties": {
+
+        "ideas": {
+
+            "type": "array",
+
+            "minItems": 3,
+
+            "maxItems": 3,
+
+            "items": {
+
+                "type": "object",
+
+                "properties": {
+
+                    "id": {
+                        "type": "string"
+                    },
+
+                    "name": {
+                        "type": "string"
+                    },
+
+                    "one_liner": {
+                        "type": "string"
+                    },
+
+                    "buyer": {
+                        "type": "string"
+                    },
+
+                    "problem": {
+                        "type": "string"
+                    },
+
+                    "product": {
+                        "type": "string"
+                    },
+
+                    "why_pay": {
+                        "type": "string"
+                    },
+
+                    "price": {
+                        "type": "string"
+                    },
+
+                    "current_alternative": {
+                        "type": "string"
+                    },
+
+                    "distribution": {
+                        "type": "string"
+                    },
+
+                    "first_10_customers": {
+                        "type": "string"
+                    },
+
+                    "automation": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 100
+                    },
+
+                    "human_work": {
+                        "type": "string"
+                    },
+
+                    "why_now": {
+                        "type": "string"
+                    },
+
+                    "similar_to_rejected": {
+                        "type": "boolean"
+                    },
+
+                    "rejected_similarity_explanation": {
+                        "type": "string"
+                    }
+                },
+
+                "required": [
+                    "id",
+                    "name",
+                    "one_liner",
+                    "buyer",
+                    "problem",
+                    "product",
+                    "why_pay",
+                    "price",
+                    "current_alternative",
+                    "distribution",
+                    "first_10_customers",
+                    "automation",
+                    "human_work",
+                    "why_now",
+                    "similar_to_rejected",
+                    "rejected_similarity_explanation"
+                ],
+
+                "additionalProperties": False
+            }
+        }
+    },
+
+    "required": [
+        "ideas"
+    ],
+
+    "additionalProperties": False
+}
+
+
+# =========================================================
+# HUNTER
+# =========================================================
+
+def run_hunter(
     case_brief,
     status
 ):
 
-    task = f"""
-هذه معلومات الحالة والقيود الخاصة بالمستخدم:
+    system = """
+أنت THE HUNTER.
 
-================ CASE BRIEF ================
+ابحث عن أماكن تتحرك فيها الأموال فعلياً.
+
+الأولوية:
+- ألم مالي.
+- willingness to pay.
+- distribution.
+- automation.
+- recurring usage.
+- speed to revenue.
+
+لا تعتبر AI ميزة بحد ذاته.
+
+ممنوع:
+- AI wrapper.
+- dashboard عام.
+- أداة يمكن لـChatGPT تنفيذها بما يكفي.
+- إعادة تغليف فكرة رفضها المستخدم.
+
+أخرج 3 أفكار فقط.
+
+إذا الفكرة قريبة من إحدى الأفكار المرفوضة،
+يجب أن تجعل similar_to_rejected=true.
+
+لا تختر WINNER.
+"""
+
+
+    prompt = f"""
+هذه حالة المستخدم:
+
+====================
 
 {case_brief}
 
-============================================
+====================
 
+أنشئ 3 أفكار مختلفة اقتصادياً.
 
-اقترح الآن بحد أقصى 5 مشاريع فقط.
+لا تعتمد على ادعاءات غير مؤكدة كأنها حقائق.
 
-احترم جميع الأفكار المرفوضة المذكورة
-في CASE BRIEF.
+هذه القائمة مرفوضة صراحة:
 
-لا تعيد تغليف فكرة مرفوضة.
-
-الهدف المال وليس الابتكار.
-
-استخدم تنسيقاً كثيفاً حتى تتسع الأفكار
-بدون شرح مطول.
+{json.dumps(REJECTED_IDEAS, ensure_ascii=False)}
 """
 
 
-    return call_model(
+    return call_json(
         HUNTER_MODEL,
-        HUNTER_INSTRUCTIONS,
-        task,
-        max_tokens=1200,
-        stage_name="THE HUNTER",
-        status_box=status
+        system,
+        prompt,
+        "hunter_ideas",
+        HUNTER_SCHEMA,
+        max_tokens=1600,
+        stage="THE HUNTER",
+        status=status,
+        reasoning="low"
     )
 
 
 # =========================================================
-# 2. KILLER FIRST ATTACK
+# FILTER
 # =========================================================
 
-def killer_attack(
-    hunter_output,
-    status
+def filter_ideas(
+    hunter_data
 ):
 
-    hunter_short = compact_text(
-        hunter_output,
-        7000
-    )
+    passed = []
+
+    blocked = []
 
 
-    task = f"""
-THE HUNTER اقترح المشاريع التالية:
+    for idea in hunter_data[
+        "ideas"
+    ]:
 
-================ HUNTER =================
-
-{hunter_short}
-
-=========================================
-
-
-هاجم كل مشروع.
-
-لا تحتاج إعادة وصف المشروع بالكامل.
-
-لكل مشروع:
-
-- 3 أسباب للفشل.
-- Kill Shot.
-- الدليل الذي يجعلنا نرفضه فوراً.
-- Score /10 بعد الهجوم.
-
-إذا مات:
-KILL IT.
-"""
+        local_result = (
+            local_blacklist_check(
+                idea
+            )
+        )
 
 
-    return call_model(
-        KILLER_MODEL,
-        KILLER_INSTRUCTIONS,
-        task,
-        max_tokens=1050,
-        stage_name="THE KILLER - الهجوم الأول",
-        status_box=status
-    )
+        model_blocked = idea[
+            "similar_to_rejected"
+        ]
 
 
-# =========================================================
-# 3. HUNTER REBUTTAL
-# =========================================================
+        if (
+            local_result["blocked"]
+            or model_blocked
+        ):
 
-def hunter_rebuttal(
-    hunter_output,
-    killer_output,
-    status
-):
-
-    hunter_short = compact_text(
-        hunter_output,
-        4500
-    )
-
-    killer_short = compact_text(
-        killer_output,
-        4500
-    )
+            reason = (
+                local_result["reason"]
+                if local_result["blocked"]
+                else idea[
+                    "rejected_similarity_explanation"
+                ]
+            )
 
 
-    task = f"""
-رأيك السابق:
-
-{hunter_short}
-
-
-هجوم THE KILLER:
-
-{killer_short}
+            blocked.append(
+                {
+                    "idea": idea,
+                    "reason": reason
+                }
+            )
 
 
-لديك رد واحد فقط.
+        else:
 
-ممنوع إضافة أفكار جديدة.
-
-لكل فكرة ما زلت تدافع عنها:
-
-- ما اعتراض Killer الصحيح؟
-- ما اعتراضه الذي ترفضه؟
-- لماذا؟
-- ما الدليل المطلوب؟
-- هل تتمسك بالفكرة أم تتخلى عنها؟
-
-إذا اقتنعت أنها سيئة:
-تخل عنها.
-
-لا تتجاوز 500 كلمة.
-"""
+            passed.append(
+                idea
+            )
 
 
-    return call_model(
-        HUNTER_MODEL,
-        HUNTER_INSTRUCTIONS,
-        task,
-        max_tokens=600,
-        stage_name="THE HUNTER - الرد",
-        status_box=status
+    return (
+        passed,
+        blocked
     )
 
 
 # =========================================================
-# 4. KILLER FINAL
-# =========================================================
-
-def killer_final(
-    hunter_output,
-    killer_output,
-    hunter_rebuttal_output,
-    status
-):
-
-    task = f"""
-Hunter Original:
-
-{compact_text(hunter_output, 3000)}
-
-
-Killer First Attack:
-
-{compact_text(killer_output, 3000)}
-
-
-Hunter Rebuttal:
-
-{compact_text(hunter_rebuttal_output, 3000)}
-
-
-أصدر حكمك الأخير.
-
-لكل فكرة:
-
-- SURVIVES أو KILL IT.
-- أهم مشكلة متبقية.
-- هل WTP حقيقية؟
-- هل Distribution واقعية؟
-- Feature أم Company؟
-- Final Red-Team Score /10.
-
-لا تضف أفكاراً.
-لا تتجاوز 500 كلمة.
-"""
-
-
-    return call_model(
-        KILLER_MODEL,
-        KILLER_INSTRUCTIONS,
-        task,
-        max_tokens=600,
-        stage_name="THE KILLER - الحكم الأخير",
-        status_box=status
-    )
-
-
-# =========================================================
-# LOCAL DEBATE PACKET
+# WEB RESEARCH
 #
-# لا يوجد Compound ولا summarizer.
+# Compound Mini فقط لبحث صغير.
+# لا نرسل الـbrief الضخم.
 # =========================================================
 
-def make_debate_packet(
-    hunter1,
-    killer1,
-    hunter2,
-    killer2
+def extract_search_sources(
+    response
 ):
 
-    return f"""
-=== HUNTER IDEAS ===
-
-{compact_text(hunter1, 3300)}
+    sources = []
 
 
-=== KILLER FIRST ATTACK ===
+    try:
 
-{compact_text(killer1, 3300)}
+        tools = (
+            response
+            .choices[0]
+            .message
+            .executed_tools
+        )
 
 
-=== HUNTER REBUTTAL ===
+        if not tools:
+            return sources
 
-{compact_text(hunter2, 2600)}
+
+        for tool in tools:
+
+            search_results = getattr(
+                tool,
+                "search_results",
+                None
+            )
 
 
-=== KILLER FINAL ATTACK ===
+            if not search_results:
+                continue
 
-{compact_text(killer2, 2600)}
-"""
+
+            results = getattr(
+                search_results,
+                "results",
+                None
+            )
+
+
+            if results is None:
+
+                if isinstance(
+                    search_results,
+                    dict
+                ):
+
+                    results = (
+                        search_results
+                        .get(
+                            "results",
+                            []
+                        )
+                    )
+
+
+            if not results:
+                continue
+
+
+            for item in results:
+
+                if isinstance(
+                    item,
+                    dict
+                ):
+
+                    title = item.get(
+                        "title",
+                        ""
+                    )
+
+                    url = item.get(
+                        "url",
+                        ""
+                    )
+
+                    snippet = item.get(
+                        "content",
+                        ""
+                    )
+
+
+                else:
+
+                    title = getattr(
+                        item,
+                        "title",
+                        ""
+                    )
+
+                    url = getattr(
+                        item,
+                        "url",
+                        ""
+                    )
+
+                    snippet = getattr(
+                        item,
+                        "content",
+                        ""
+                    )
+
+
+                if url:
+
+                    sources.append(
+                        {
+                            "title": title,
+                            "url": url,
+                            "snippet": snippet
+                        }
+                    )
+
+
+    except Exception:
+        pass
+
+
+    # deduplicate
+    unique = []
+
+    seen = set()
+
+
+    for source in sources:
+
+        url = source[
+            "url"
+        ]
+
+
+        if url not in seen:
+
+            seen.add(
+                url
+            )
+
+            unique.append(
+                source
+            )
+
+
+    return unique[:8]
 
 
 # =========================================================
-# 5. OPERATOR
+# RESEARCH ONE IDEA
 # =========================================================
 
-def operator_evaluate(
-    debate_packet,
+def research_idea(
+    idea,
     status
 ):
 
-    task = f"""
-هذا هو محضر Red Team المضغوط محلياً:
+    wait_for_model(
+        RESEARCH_MODEL,
+        f"بحث {idea['name']}",
+        status
+    )
 
-====================================
 
-{debate_packet}
+    prompt = f"""
+Research this business idea using current web sources.
 
-====================================
+IDEA:
+{idea["name"]}
 
+BUYER:
+{idea["buyer"]}
+
+PRODUCT:
+{idea["product"]}
+
+PRICE HYPOTHESIS:
+{idea["price"]}
+
+DISTRIBUTION HYPOTHESIS:
+{idea["distribution"]}
+
+Search specifically for:
+
+1. Direct competitors doing the same job-to-be-done.
+2. Competitor pricing where publicly visible.
+3. Existing free/platform-native alternatives.
+4. Evidence that this buyer actually pays for this problem.
+5. Evidence for or against urgency / why now.
+6. Concrete distribution channels to reach buyers.
+7. Regulatory/platform/API risks.
+8. Evidence contradicting the idea.
+
+Be skeptical.
+
+Do not invent facts.
+
+Separate:
+VERIFIED
+UNKNOWN
+CONTRADICTED
+
+Keep the answer concise.
+"""
+
+
+    errors = []
+
+
+    for attempt in range(4):
+
+        try:
+
+            response = (
+                client
+                .chat
+                .completions
+                .create(
+                    model=RESEARCH_MODEL,
+
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": prompt
+                        }
+                    ],
+
+                    max_completion_tokens=1300,
+
+                    compound_custom={
+                        "tools": {
+                            "enabled_tools": [
+                                "web_search"
+                            ]
+                        }
+                    }
+                )
+            )
+
+
+            MODEL_LAST_USED[
+                RESEARCH_MODEL
+            ] = time.time()
+
+
+            content = (
+                response
+                .choices[0]
+                .message
+                .content
+            )
+
+
+            if content:
+
+                return {
+                    "ok": True,
+                    "text": content,
+                    "sources": (
+                        extract_search_sources(
+                            response
+                        )
+                    ),
+                    "error": None
+                }
+
+
+        except Exception as e:
+
+            error_text = str(e)
+
+            errors.append(
+                error_text
+            )
+
+
+            if (
+                "429" in error_text
+                or "rate_limit" in error_text.lower()
+            ):
+
+                seconds = retry_seconds(
+                    error_text
+                )
+
+
+                status.warning(
+                    f"⏳ البحث عن "
+                    f"{idea['name']}: "
+                    f"انتظار {seconds} ثانية..."
+                )
+
+
+                time.sleep(
+                    seconds
+                )
+
+                continue
+
+
+            time.sleep(2)
+
+
+    return {
+        "ok": False,
+        "text": "",
+        "sources": [],
+        "error": "\n\n".join(errors)
+    }
+
+
+# =========================================================
+# KILLER SCHEMA
+# =========================================================
+
+KILLER_SCHEMA = {
+
+    "type": "object",
+
+    "properties": {
+
+        "reviews": {
+
+            "type": "array",
+
+            "items": {
+
+                "type": "object",
+
+                "properties": {
+
+                    "idea_id": {
+                        "type": "string"
+                    },
+
+                    "top_failure_reason_1": {
+                        "type": "string"
+                    },
+
+                    "top_failure_reason_2": {
+                        "type": "string"
+                    },
+
+                    "top_failure_reason_3": {
+                        "type": "string"
+                    },
+
+                    "kill_shot": {
+                        "type": "string"
+                    },
+
+                    "immediate_rejection_evidence": {
+                        "type": "string"
+                    },
+
+                    "research_supports_idea": {
+                        "type": "string"
+                    },
+
+                    "research_hurts_idea": {
+                        "type": "string"
+                    },
+
+                    "score_out_of_10": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10
+                    },
+
+                    "decision": {
+                        "type": "string",
+                        "enum": [
+                            "SURVIVES",
+                            "KILL IT"
+                        ]
+                    }
+                },
+
+                "required": [
+                    "idea_id",
+                    "top_failure_reason_1",
+                    "top_failure_reason_2",
+                    "top_failure_reason_3",
+                    "kill_shot",
+                    "immediate_rejection_evidence",
+                    "research_supports_idea",
+                    "research_hurts_idea",
+                    "score_out_of_10",
+                    "decision"
+                ],
+
+                "additionalProperties": False
+            }
+        }
+    },
+
+    "required": [
+        "reviews"
+    ],
+
+    "additionalProperties": False
+}
+
+
+# =========================================================
+# KILLER FIRST ATTACK
+# =========================================================
+
+def run_killer(
+    ideas,
+    research,
+    status
+):
+
+    system = """
+أنت THE KILLER.
+
+أنت مستثمر متشائم.
+
+لا تقترح أفكاراً جديدة.
+
+حاول قتل كل فكرة بناءً على:
+- competition
+- WTP
+- CAC
+- churn
+- distribution
+- liability
+- regulation
+- platform risk
+- security/privacy
+- support
+- moat
+- ChatGPT substitution
+- Feature vs Company
+
+الأهم:
+استخدم نتائج البحث كمصدر للحكم.
+
+لا تعتبر ادعاء Hunter حقيقة إذا لم يدعمه البحث.
+
+إذا الدليل غير موجود، قل UNKNOWN.
+
+ممنوع المجاملة.
+"""
+
+
+    payload = []
+
+
+    for idea in ideas:
+
+        item = {
+            "idea": idea,
+            "research": research.get(
+                idea["id"],
+                {}
+            ).get(
+                "text",
+                "NO RESEARCH"
+            )
+        }
+
+        payload.append(
+            item
+        )
+
+
+    prompt = (
+        "هاجم هذه الأفكار:\n\n"
+        + json.dumps(
+            payload,
+            ensure_ascii=False
+        )
+    )
+
+
+    return call_json(
+        KILLER_MODEL,
+        system,
+        prompt,
+        "killer_reviews",
+        KILLER_SCHEMA,
+        max_tokens=1500,
+        stage="THE KILLER",
+        status=status,
+        reasoning="none"
+    )
+
+
+# =========================================================
+# HUNTER REBUTTAL SCHEMA
+# =========================================================
+
+REBUTTAL_SCHEMA = {
+
+    "type": "object",
+
+    "properties": {
+
+        "responses": {
+
+            "type": "array",
+
+            "items": {
+
+                "type": "object",
+
+                "properties": {
+
+                    "idea_id": {
+                        "type": "string"
+                    },
+
+                    "valid_objection": {
+                        "type": "string"
+                    },
+
+                    "disputed_objection": {
+                        "type": "string"
+                    },
+
+                    "evidence_needed": {
+                        "type": "string"
+                    },
+
+                    "position": {
+                        "type": "string",
+                        "enum": [
+                            "DEFEND",
+                            "DROP"
+                        ]
+                    }
+                },
+
+                "required": [
+                    "idea_id",
+                    "valid_objection",
+                    "disputed_objection",
+                    "evidence_needed",
+                    "position"
+                ],
+
+                "additionalProperties": False
+            }
+        }
+    },
+
+    "required": [
+        "responses"
+    ],
+
+    "additionalProperties": False
+}
+
+
+# =========================================================
+# HUNTER REBUTTAL
+# =========================================================
+
+def run_rebuttal(
+    ideas,
+    killer_data,
+    research,
+    status
+):
+
+    system = """
+أنت THE HUNTER.
+
+هذه فرصتك الوحيدة للرد.
+
+لا تضف أفكاراً جديدة.
+
+إذا كشف البحث أو Killer عيباً حقيقياً،
+اعترف به.
+
+لا تحاول إنقاذ فكرة سيئة.
+
+DROP أفضل من ترقيع فكرة ميتة.
+"""
+
+
+    payload = {
+        "ideas": ideas,
+        "killer": killer_data,
+        "research": {
+            idea["id"]:
+                research.get(
+                    idea["id"],
+                    {}
+                ).get(
+                    "text",
+                    ""
+                )
+
+            for idea in ideas
+        }
+    }
+
+
+    return call_json(
+        HUNTER_MODEL,
+        system,
+        json.dumps(
+            payload,
+            ensure_ascii=False
+        ),
+        "hunter_rebuttal",
+        REBUTTAL_SCHEMA,
+        max_tokens=900,
+        stage="HUNTER REBUTTAL",
+        status=status,
+        reasoning="low"
+    )
+
+
+# =========================================================
+# FINAL KILLER SCHEMA
+# =========================================================
+
+FINAL_KILLER_SCHEMA = {
+
+    "type": "object",
+
+    "properties": {
+
+        "decisions": {
+
+            "type": "array",
+
+            "items": {
+
+                "type": "object",
+
+                "properties": {
+
+                    "idea_id": {
+                        "type": "string"
+                    },
+
+                    "decision": {
+                        "type": "string",
+                        "enum": [
+                            "SURVIVES",
+                            "KILL IT"
+                        ]
+                    },
+
+                    "remaining_problem": {
+                        "type": "string"
+                    },
+
+                    "wtp_real": {
+                        "type": "boolean"
+                    },
+
+                    "distribution_real": {
+                        "type": "boolean"
+                    },
+
+                    "feature_or_company": {
+                        "type": "string",
+                        "enum": [
+                            "FEATURE",
+                            "COMPANY",
+                            "UNCLEAR"
+                        ]
+                    },
+
+                    "final_score_out_of_10": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10
+                    }
+                },
+
+                "required": [
+                    "idea_id",
+                    "decision",
+                    "remaining_problem",
+                    "wtp_real",
+                    "distribution_real",
+                    "feature_or_company",
+                    "final_score_out_of_10"
+                ],
+
+                "additionalProperties": False
+            }
+        }
+    },
+
+    "required": [
+        "decisions"
+    ],
+
+    "additionalProperties": False
+}
+
+
+# =========================================================
+# KILLER FINAL
+# =========================================================
+
+def run_killer_final(
+    ideas,
+    first_killer,
+    rebuttal,
+    research,
+    status
+):
+
+    system = """
+أنت THE KILLER.
+
+هذه آخر فرصة للهجوم.
+
+لا تولد أفكاراً.
+
+لا تعيد إحياء فكرة ضعيفة.
+
+احكم بناءً على الأدلة الموجودة.
+
+إذا WTP أو Distribution غير مثبتة،
+لا تتعامل معها كحقائق.
+"""
+
+
+    payload = {
+        "ideas": ideas,
+        "first_attack": first_killer,
+        "hunter_rebuttal": rebuttal,
+        "research": {
+            idea["id"]:
+                research.get(
+                    idea["id"],
+                    {}
+                ).get(
+                    "text",
+                    ""
+                )
+
+            for idea in ideas
+        }
+    }
+
+
+    return call_json(
+        KILLER_MODEL,
+        system,
+        json.dumps(
+            payload,
+            ensure_ascii=False
+        ),
+        "killer_final",
+        FINAL_KILLER_SCHEMA,
+        max_tokens=1000,
+        stage="KILLER FINAL",
+        status=status,
+        reasoning="none"
+    )
+
+
+# =========================================================
+# OPERATOR SCHEMA
+# =========================================================
+
+OPERATOR_SCHEMA = {
+
+    "type": "object",
+
+    "properties": {
+
+        "evaluations": {
+
+            "type": "array",
+
+            "items": {
+
+                "type": "object",
+
+                "properties": {
+
+                    "idea_id": {
+                        "type": "string"
+                    },
+
+                    "idea_name": {
+                        "type": "string"
+                    },
+
+                    "severity": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 15
+                    },
+
+                    "willingness_to_pay": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 15
+                    },
+
+                    "distribution": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 15
+                    },
+
+                    "automation": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 15
+                    },
+
+                    "recurring": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10
+                    },
+
+                    "competition": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10
+                    },
+
+                    "moat": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 5
+                    },
+
+                    "speed_to_revenue": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10
+                    },
+
+                    "stack_fit": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 5
+                    },
+
+                    "total_score": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 100
+                    },
+
+                    "price": {
+                        "type": "string"
+                    },
+
+                    "gross_margin": {
+                        "type": "string"
+                    },
+
+                    "ltv": {
+                        "type": "string"
+                    },
+
+                    "cac": {
+                        "type": "string"
+                    },
+
+                    "customers_for_1k_mrr": {
+                        "type": "string"
+                    },
+
+                    "customers_for_5k_mrr": {
+                        "type": "string"
+                    },
+
+                    "customers_for_10k_mrr": {
+                        "type": "string"
+                    },
+
+                    "automation_percent": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 100
+                    },
+
+                    "first_buyer": {
+                        "type": "string"
+                    },
+
+                    "fastest_test": {
+                        "type": "string"
+                    },
+
+                    "biggest_risk": {
+                        "type": "string"
+                    },
+
+                    "truth_test": {
+                        "type": "string"
+                    }
+                },
+
+                "required": [
+                    "idea_id",
+                    "idea_name",
+                    "severity",
+                    "willingness_to_pay",
+                    "distribution",
+                    "automation",
+                    "recurring",
+                    "competition",
+                    "moat",
+                    "speed_to_revenue",
+                    "stack_fit",
+                    "total_score",
+                    "price",
+                    "gross_margin",
+                    "ltv",
+                    "cac",
+                    "customers_for_1k_mrr",
+                    "customers_for_5k_mrr",
+                    "customers_for_10k_mrr",
+                    "automation_percent",
+                    "first_buyer",
+                    "fastest_test",
+                    "biggest_risk",
+                    "truth_test"
+                ],
+
+                "additionalProperties": False
+            }
+        },
+
+        "winner_exists": {
+            "type": "boolean"
+        },
+
+        "winner_idea_id": {
+            "type": "string"
+        },
+
+        "winner_reason": {
+            "type": "string"
+        }
+    },
+
+    "required": [
+        "evaluations",
+        "winner_exists",
+        "winner_idea_id",
+        "winner_reason"
+    ],
+
+    "additionalProperties": False
+}
+
+
+# =========================================================
+# OPERATOR
+# =========================================================
+
+def run_operator(
+    surviving_ideas,
+    research,
+    killer_final,
+    status
+):
+
+    system = """
+أنت THE OPERATOR / ECONOMIST.
+
+أنت CTO + CFO + Growth Operator.
 
 قيّم فقط الأفكار التي نجت من Killer.
 
-طبق نظام 100 نقطة حرفياً.
+نظام الـ100:
 
-لا ترفع الدرجات.
+Severity 15
+WTP 15
+Distribution 15
+Automation 15
+Recurring 10
+Competition 10
+Moat 5
+Speed to Revenue 10
+Stack Fit 5
 
-قدم:
+لا ترفع الدرجة للوصول إلى 85.
 
-1. Economics.
-2. Build.
-3. Automation.
-4. Distribution.
-5. Truth Test للأفكار 80+.
+WINNER فقط إذا total_score > 85.
 
-ثم الجدول:
+إذا لا توجد فكرة تستحق ذلك:
+winner_exists=false.
 
-| Rank | Idea | Score | First Buyer | Price | Automation | Fastest Test | Biggest Risk |
-
-إذا لا توجد فكرة فوق 85:
-اكتب NO WINNER.
-
-إذا يوجد WINNER فوق 85:
-قدم البنود العشرين المطلوبة في تعليماتك.
-
-لا تكتب FINAL VERDICT بعد.
+لا تخترع أرقاماً.
+إذا CAC/LTV غير مثبتة، استخدم تقديراً واضحاً
+ولا تتعامل معه كحقيقة.
 """
 
 
-    return call_model(
+    payload = {
+
+        "surviving_ideas":
+            surviving_ideas,
+
+        "research": {
+
+            idea["id"]:
+                research.get(
+                    idea["id"],
+                    {}
+                ).get(
+                    "text",
+                    ""
+                )
+
+            for idea in surviving_ideas
+        },
+
+        "killer_final":
+            killer_final
+    }
+
+
+    return call_json(
         OPERATOR_MODEL,
-        OPERATOR_INSTRUCTIONS,
-        task,
-        max_tokens=1600,
-        stage_name="THE OPERATOR",
-        status_box=status
+        system,
+        json.dumps(
+            payload,
+            ensure_ascii=False
+        ),
+        "operator_evaluation",
+        OPERATOR_SCHEMA,
+        max_tokens=1800,
+        stage="THE OPERATOR",
+        status=status,
+        reasoning="low"
     )
 
 
 # =========================================================
-# 6. FINAL OBJECTION
+# FINAL OBJECTION
 # =========================================================
 
-def killer_final_objection(
-    operator_output,
+def final_objection(
+    operator_data,
+    surviving_ideas,
+    research,
     status
 ):
 
-    operator_short = compact_text(
-        operator_output,
-        7000
+    if not operator_data[
+        "winner_exists"
+    ]:
+
+        return {
+            "ok": True,
+            "text": (
+                "## FINAL OBJECTION\n\n"
+                "لا يوجد Winner فوق 85/100؛ "
+                "إجبار النظام على اختيار مشروع "
+                "سيخالف قواعد التقييم."
+            )
+        }
+
+
+    winner_id = operator_data[
+        "winner_idea_id"
+    ]
+
+
+    winner = next(
+        (
+            idea
+            for idea in surviving_ideas
+            if idea["id"] == winner_id
+        ),
+        None
     )
 
 
-    task = f"""
-THE OPERATOR أصدر التقييم التالي:
+    system = """
+أنت THE KILLER.
 
-====================================
+هذه آخر فرصة لقتل الـWinner.
 
-{operator_short}
+اكتب أقوى حجة واحدة ممكنة
+تجعل المشروع ينتهي عند $0 MRR.
 
-====================================
+استخدم البحث الموجود.
 
-
-اكتب الآن فقط:
-
-## FINAL OBJECTION
-
-إذا يوجد WINNER:
-
-قدم أقوى حجة ممكنة تجعل هذا المشروع
-ينتهي عند $0 MRR.
-
-لا تجامل.
-
-إذا NO WINNER:
-
-اشرح باختصار لماذا عدم البناء
-أفضل من إجبارنا على اختيار فكرة ضعيفة.
-
-لا تقترح أي مشروع جديد.
+لا تقترح فكرة جديدة.
 """
 
 
-    return call_model(
+    prompt = json.dumps(
+        {
+            "winner": winner,
+            "operator": operator_data,
+            "research": (
+                research.get(
+                    winner_id,
+                    {}
+                ).get(
+                    "text",
+                    ""
+                )
+            )
+        },
+        ensure_ascii=False
+    )
+
+
+    return call_text(
         KILLER_MODEL,
-        KILLER_INSTRUCTIONS,
-        task,
-        max_tokens=400,
-        stage_name="THE KILLER - FINAL OBJECTION",
-        status_box=status
+        system,
+        prompt,
+        max_tokens=450,
+        stage="FINAL OBJECTION",
+        status=status,
+        reasoning="none"
     )
 
 
 # =========================================================
-# 7. FINAL VERDICT
+# FINAL VERDICT
 # =========================================================
 
-def operator_final_verdict(
-    operator_output,
-    objection_output,
+def final_verdict(
+    operator_data,
+    objection,
+    surviving_ideas,
     status
 ):
 
-    task = f"""
-تقييمك السابق:
+    system = """
+أنت THE OPERATOR.
 
-{compact_text(operator_output, 6500)}
+اتخذ القرار النهائي.
 
+ممنوع تغيير الدرجات عشوائياً.
 
-FINAL OBJECTION من Killer:
+إذا لا يوجد Winner فوق 85:
+القرار KILL.
 
-{compact_text(objection_output, 2500)}
+إذا يوجد Winner:
+راجع FINAL OBJECTION.
 
-
-اكتب الآن فقط:
+أخرج فقط:
 
 ## FINAL VERDICT
 
-ثم واحد فقط:
-
 BUILD
-
 أو
-
 KILL
 
-
-بعدها تفسير مختصر.
-
-إذا BUILD:
-حدد أول اختبار مدفوع خلال 7 أيام.
-
-إذا KILL:
-حدد الافتراض الذي فشل.
-
-لا تغير الدرجات السابقة
-إلا إذا اعتراض Killer كشف خطأ جوهرياً.
+ثم:
+- السبب.
+- اختبار 7 أيام.
+- BUILD criterion.
+- KILL criterion.
 """
 
 
-    return call_model(
+    prompt = json.dumps(
+        {
+            "operator":
+                operator_data,
+
+            "final_objection":
+                objection,
+
+            "surviving_ideas":
+                surviving_ideas
+        },
+        ensure_ascii=False
+    )
+
+
+    return call_text(
         OPERATOR_MODEL,
-        OPERATOR_INSTRUCTIONS,
-        task,
-        max_tokens=450,
-        stage_name="THE OPERATOR - FINAL VERDICT",
-        status_box=status
+        system,
+        prompt,
+        max_tokens=600,
+        stage="FINAL VERDICT",
+        status=status,
+        reasoning="low"
     )
 
 
 # =========================================================
-# REPORT
+# RENDER IDEA
 # =========================================================
 
-def build_report(
-    original_question,
-    case_brief,
-    hunter1,
-    killer1,
-    hunter2,
-    killer2,
+def render_idea(
+    idea
+):
+
+    st.subheader(
+        idea["name"]
+    )
+
+    st.write(
+        idea["one_liner"]
+    )
+
+    st.markdown(
+        f"""
+**المشتري:** {idea["buyer"]}
+
+**المشكلة:** {idea["problem"]}
+
+**المنتج:** {idea["product"]}
+
+**لماذا سيدفع؟** {idea["why_pay"]}
+
+**السعر:** {idea["price"]}
+
+**البديل الحالي:** {idea["current_alternative"]}
+
+**Distribution:** {idea["distribution"]}
+
+**أول 10 عملاء:** {idea["first_10_customers"]}
+
+**Automation:** {idea["automation"]}%
+
+**العمل البشري:** {idea["human_work"]}
+
+**لماذا الآن؟** {idea["why_now"]}
+"""
+    )
+
+
+# =========================================================
+# FINAL REPORT
+# =========================================================
+
+def build_final_report(
+    ideas,
+    blocked,
+    research,
+    killer,
+    rebuttal,
+    killer_final,
     operator,
     objection,
     verdict
 ):
 
-    return f"""
-MD AI COUNCIL
-INVESTMENT RED TEAM
+    text = """
+MD INVESTMENT RESEARCH COUNCIL
 
 ========================================
-ORIGINAL INPUT
+IDEAS
 ========================================
-
-{original_question}
-
-
-========================================
-CASE BRIEF USED BY THE COUNCIL
-========================================
-
-{case_brief}
+"""
 
 
-========================================
-1. THE HUNTER
-========================================
+    for idea in ideas:
 
-{hunter1}
+        text += f"""
+
+{idea["name"]}
+
+Buyer:
+{idea["buyer"]}
+
+Problem:
+{idea["problem"]}
+
+Price:
+{idea["price"]}
+
+Distribution:
+{idea["distribution"]}
+
+Automation:
+{idea["automation"]}%
+
+"""
 
 
-========================================
-2. THE KILLER
-========================================
+    if blocked:
 
-{killer1}
-
-
-========================================
-3. THE HUNTER - REBUTTAL
-========================================
-
-{hunter2}
-
-
-========================================
-4. THE KILLER - FINAL ATTACK
-========================================
-
-{killer2}
-
+        text += """
 
 ========================================
-5. THE OPERATOR
+BLOCKED IDEAS
+========================================
+"""
+
+
+        for item in blocked:
+
+            text += f"""
+
+{item["idea"]["name"]}
+
+Reason:
+{item["reason"]}
+"""
+
+
+    text += """
+
+========================================
+WEB RESEARCH
+========================================
+"""
+
+
+    for idea in ideas:
+
+        result = research.get(
+            idea["id"],
+            {}
+        )
+
+
+        text += f"""
+
+{idea["name"]}
+
+{result.get("text", "")}
+
+SOURCES:
+"""
+
+
+        for source in result.get(
+            "sources",
+            []
+        ):
+
+            text += (
+                f"\n- "
+                f"{source.get('title', '')}: "
+                f"{source.get('url', '')}"
+            )
+
+
+    text += f"""
+
+========================================
+KILLER FIRST ATTACK
 ========================================
 
-{operator}
+{json.dumps(killer, ensure_ascii=False, indent=2)}
+
+
+========================================
+HUNTER REBUTTAL
+========================================
+
+{json.dumps(rebuttal, ensure_ascii=False, indent=2)}
+
+
+========================================
+KILLER FINAL
+========================================
+
+{json.dumps(killer_final, ensure_ascii=False, indent=2)}
+
+
+========================================
+OPERATOR
+========================================
+
+{json.dumps(operator, ensure_ascii=False, indent=2)}
 
 
 ========================================
@@ -1246,24 +2424,25 @@ FINAL VERDICT
 ========================================
 
 {verdict}
-""".strip()
+"""
+
+
+    return text.strip()
 
 
 # =========================================================
-# PDF
+# PDF HELPERS
 # =========================================================
 
-def clean_pdf_text(text):
+def clean_pdf_text(
+    text
+):
 
     text = re.sub(
         r"#{1,6}\s*",
         "",
         text
     )
-
-    text = text.replace("**", "")
-    text = text.replace("__", "")
-    text = text.replace("`", "")
 
     emojis = [
         "🧠",
@@ -1278,8 +2457,11 @@ def clean_pdf_text(text):
         "📥",
         "📄",
         "📝",
-        "🗑️"
+        "🗑️",
+        "🔎",
+        "🎯"
     ]
+
 
     for emoji in emojis:
 
@@ -1288,30 +2470,35 @@ def clean_pdf_text(text):
             ""
         )
 
+
     return text
 
 
-def find_arabic_font():
+def find_font():
 
-    candidates = [
+    options = [
         "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
         "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
     ]
 
-    for path in candidates:
 
-        if os.path.exists(path):
-            return path
+    for option in options:
+
+        if os.path.exists(
+            option
+        ):
+
+            return option
 
 
-    fonts = glob.glob(
+    matches = glob.glob(
         "/usr/share/fonts/**/*.ttf",
         recursive=True
     )
 
 
-    for font in fonts:
+    for font in matches:
 
         lower = font.lower()
 
@@ -1320,20 +2507,24 @@ def find_arabic_font():
             or "arabic" in lower
             or "dejavusans" in lower
         ):
+
             return font
 
 
     return None
 
 
-def create_pdf(report_text):
+def create_pdf(
+    report
+):
 
-    font_path = find_arabic_font()
+    font = find_font()
 
-    if not font_path:
+
+    if not font:
 
         raise RuntimeError(
-            "لم يتم العثور على خط عربي."
+            "Arabic font not found."
         )
 
 
@@ -1344,31 +2535,28 @@ def create_pdf(report_text):
     )
 
 
+    pdf.set_auto_page_break(
+        True,
+        15
+    )
+
     pdf.set_margins(
         15,
         15,
         15
     )
 
-
-    pdf.set_auto_page_break(
-        auto=True,
-        margin=15
-    )
-
-
     pdf.add_page()
 
 
     pdf.add_font(
         "Arabic",
-        fname=font_path
+        fname=font
     )
-
 
     pdf.set_font(
         "Arabic",
-        size=11
+        size=10
     )
 
 
@@ -1385,31 +2573,35 @@ def create_pdf(report_text):
         pass
 
 
-    text = clean_pdf_text(
-        report_text
+    report = clean_pdf_text(
+        report
     )
 
 
-    for paragraph in text.split("\n"):
+    for line in report.split(
+        "\n"
+    ):
 
-        paragraph = paragraph.strip()
+        line = line.strip()
 
-        if not paragraph:
+
+        if not line:
 
             pdf.ln(3)
             continue
 
 
-        if paragraph.startswith(
-            "================================"
+        if line.startswith(
+            "================"
         ):
+
             continue
 
 
         pdf.multi_cell(
             0,
-            7,
-            paragraph,
+            6,
+            line,
             align="R",
             new_x="LMARGIN",
             new_y="NEXT"
@@ -1422,17 +2614,18 @@ def create_pdf(report_text):
 
 
 # =========================================================
-# SESSION STATE
+# STATE
 # =========================================================
 
 DEFAULT_STATE = {
-    "original_question": "",
-    "case_brief": None,
-    "brief_info": None,
-    "hunter1": None,
-    "killer1": None,
-    "hunter2": None,
-    "killer2": None,
+    "original": "",
+    "case_brief": "",
+    "ideas": None,
+    "blocked": None,
+    "research": None,
+    "killer": None,
+    "rebuttal": None,
+    "killer_final": None,
     "operator": None,
     "objection": None,
     "verdict": None,
@@ -1440,11 +2633,15 @@ DEFAULT_STATE = {
 }
 
 
-for key, value in DEFAULT_STATE.items():
+for key, value in (
+    DEFAULT_STATE.items()
+):
 
     if key not in st.session_state:
 
-        st.session_state[key] = value
+        st.session_state[
+            key
+        ] = value
 
 
 # =========================================================
@@ -1452,7 +2649,7 @@ for key, value in DEFAULT_STATE.items():
 # =========================================================
 
 st.title(
-    "🧠 مجلس MD الاستثماري"
+    "🧠 MD Investment Research Council"
 )
 
 
@@ -1461,41 +2658,32 @@ st.caption(
 )
 
 
-st.info(
+st.write(
     """
-قواعد Hunter / Killer / Operator ونظام الـ100 نقطة
-أصبحت مدمجة داخل التطبيق.
+**THE HUNTER** يولد 3 فرص فقط.
 
-إذا لصقت البرومبت القديم الطويل،
-سيحذف التطبيق قسم الوكلاء والقواعد تلقائياً
-ويحتفظ بالهدف والأصول والأفكار المرفوضة.
+ثم يقوم النظام بإسقاط الأفكار التي تشبه
+قائمة المشاريع المرفوضة.
+
+بعدها يتم إجراء **بحث ويب حقيقي**
+على كل فكرة نجت.
+
+ثم:
+
+**THE KILLER → HUNTER REBUTTAL → THE KILLER → THE OPERATOR**
 """
 )
 
 
-question = st.text_area(
+original = st.text_area(
     "اكتب الحالة أو الصق البرومبت السابق:",
-    height=350,
-    value=st.session_state.original_question,
-    placeholder="""
-مثال:
-
-نريد مشروعاً عالي الأتمتة وسريع الوصول للدخل.
-
-الأصول:
-- Stripe
-- DeepSeek API
-- Replit
-- Composio
-
-الأفكار المرفوضة:
-- ...
-"""
+    height=330,
+    value=st.session_state.original
 )
 
 
 start = st.button(
-    "🚀 ابدأ المناظرة",
+    "🚀 ابدأ Research Council",
     type="primary",
     use_container_width=True
 )
@@ -1507,269 +2695,501 @@ start = st.button(
 
 if start:
 
-    if not question.strip():
+    if not original.strip():
 
         st.warning(
             "اكتب الحالة أولاً."
         )
 
+
     else:
 
-        # Reset
-        for key, value in DEFAULT_STATE.items():
+        # reset
+        for key, value in (
+            DEFAULT_STATE.items()
+        ):
 
-            st.session_state[key] = value
+            st.session_state[
+                key
+            ] = value
 
 
-        st.session_state.original_question = (
-            question
-        )
+        st.session_state[
+            "original"
+        ] = original
 
 
         status = st.empty()
 
 
-        # =================================================
-        # PREPARE LOCALLY
-        # =================================================
+        # -----------------------------------------
+        # PREPARE
+        # -----------------------------------------
 
         status.info(
-            "📋 تجهيز الحالة محلياً بدون AI..."
+            "📋 تجهيز الحالة..."
         )
 
 
-        brief_info = prepare_case_brief(
-            question
+        case_brief = (
+            prepare_case_brief(
+                original
+            )
         )
 
 
-        case_brief = brief_info["text"]
+        st.session_state[
+            "case_brief"
+        ] = case_brief
 
 
-        st.session_state.case_brief = (
-            case_brief
-        )
-
-        st.session_state.brief_info = (
-            brief_info
-        )
-
-
-        # =================================================
+        # -----------------------------------------
         # HUNTER
-        # =================================================
+        # -----------------------------------------
 
         status.info(
-            "🎯 THE HUNTER يبحث عن المشاريع..."
+            "🎯 THE HUNTER يولد 3 أفكار..."
         )
 
 
-        result = hunter_generate(
+        hunter_result = run_hunter(
             case_brief,
             status
         )
 
 
-        if not result["ok"]:
+        if not hunter_result["ok"]:
 
-            st.session_state.error = (
-                result["error"]
-            )
+            st.session_state[
+                "error"
+            ] = hunter_result[
+                "error"
+            ]
+
 
         else:
 
-            st.session_state.hunter1 = (
-                result["text"]
+            hunter_data = (
+                hunter_result[
+                    "data"
+                ]
             )
 
 
-            # =============================================
-            # KILLER
-            # =============================================
+            # -------------------------------------
+            # FILTER
+            # -------------------------------------
 
-            status.info(
-                "🔪 THE KILLER يهاجم المشاريع..."
-            )
-
-
-            result = killer_attack(
-                st.session_state.hunter1,
-                status
-            )
-
-
-            if not result["ok"]:
-
-                st.session_state.error = (
-                    result["error"]
+            ideas, blocked = (
+                filter_ideas(
+                    hunter_data
                 )
+            )
+
+
+            st.session_state[
+                "ideas"
+            ] = ideas
+
+            st.session_state[
+                "blocked"
+            ] = blocked
+
+
+            if not ideas:
+
+                st.session_state[
+                    "verdict"
+                ] = (
+                    "## FINAL VERDICT\n\n"
+                    "KILL\n\n"
+                    "كل الأفكار التي ولدها Hunter "
+                    "كانت قريبة من أفكار مرفوضة مسبقاً."
+                )
+
+
+                status.error(
+                    "❌ لم تنج أي فكرة من فلتر المرفوضات."
+                )
+
 
             else:
 
-                st.session_state.killer1 = (
-                    result["text"]
-                )
+                # ---------------------------------
+                # WEB RESEARCH
+                # ---------------------------------
+
+                research = {}
 
 
-                # =========================================
-                # HUNTER REBUTTAL
-                # =========================================
+                for index, idea in enumerate(
+                    ideas,
+                    start=1
+                ):
 
-                status.info(
-                    "🎯 THE HUNTER يرد مرة واحدة..."
-                )
-
-
-                result = hunter_rebuttal(
-                    st.session_state.hunter1,
-                    st.session_state.killer1,
-                    status
-                )
-
-
-                if not result["ok"]:
-
-                    st.session_state.error = (
-                        result["error"]
+                    status.info(
+                        f"🔎 بحث ويب "
+                        f"{index}/{len(ideas)}: "
+                        f"{idea['name']}"
                     )
+
+
+                    result = research_idea(
+                        idea,
+                        status
+                    )
+
+
+                    research[
+                        idea["id"]
+                    ] = result
+
+
+                st.session_state[
+                    "research"
+                ] = research
+
+
+                # لا نسمح بالاستمرار إذا فشل
+                # البحث على كل الأفكار.
+                failed_research = [
+
+                    idea["id"]
+
+                    for idea in ideas
+
+                    if not research[
+                        idea["id"]
+                    ]["ok"]
+                ]
+
+
+                if failed_research:
+
+                    st.session_state[
+                        "error"
+                    ] = (
+                        "فشل بحث الويب للأفكار: "
+                        + ", ".join(
+                            failed_research
+                        )
+                    )
+
 
                 else:
 
-                    st.session_state.hunter2 = (
-                        result["text"]
-                    )
-
-
-                    # =====================================
-                    # KILLER FINAL
-                    # =====================================
+                    # -----------------------------
+                    # KILLER
+                    # -----------------------------
 
                     status.info(
-                        "🔪 THE KILLER يصدر حكمه النهائي..."
+                        "🔪 THE KILLER يراجع "
+                        "الأفكار والأدلة..."
                     )
 
 
-                    result = killer_final(
-                        st.session_state.hunter1,
-                        st.session_state.killer1,
-                        st.session_state.hunter2,
+                    result = run_killer(
+                        ideas,
+                        research,
                         status
                     )
 
 
                     if not result["ok"]:
 
-                        st.session_state.error = (
-                            result["error"]
-                        )
+                        st.session_state[
+                            "error"
+                        ] = result[
+                            "error"
+                        ]
+
 
                     else:
 
-                        st.session_state.killer2 = (
-                            result["text"]
+                        killer_data = (
+                            result[
+                                "data"
+                            ]
                         )
 
 
-                        # ================================
-                        # LOCAL PACKET
-                        # ================================
-
-                        packet = make_debate_packet(
-                            st.session_state.hunter1,
-                            st.session_state.killer1,
-                            st.session_state.hunter2,
-                            st.session_state.killer2
-                        )
+                        st.session_state[
+                            "killer"
+                        ] = killer_data
 
 
-                        # ================================
-                        # OPERATOR
-                        # ================================
+                        # -------------------------
+                        # REBUTTAL
+                        # -------------------------
 
                         status.info(
-                            "📊 THE OPERATOR يحسب الاقتصاديات..."
+                            "🎯 Hunter يرد مرة واحدة..."
                         )
 
 
-                        result = operator_evaluate(
-                            packet,
+                        result = run_rebuttal(
+                            ideas,
+                            killer_data,
+                            research,
                             status
                         )
 
 
                         if not result["ok"]:
 
-                            st.session_state.error = (
-                                result["error"]
-                            )
+                            st.session_state[
+                                "error"
+                            ] = result[
+                                "error"
+                            ]
+
 
                         else:
 
-                            st.session_state.operator = (
-                                result["text"]
+                            rebuttal_data = (
+                                result[
+                                    "data"
+                                ]
                             )
 
 
-                            # ============================
-                            # FINAL OBJECTION
-                            # ============================
+                            st.session_state[
+                                "rebuttal"
+                            ] = rebuttal_data
+
+
+                            # ---------------------
+                            # KILLER FINAL
+                            # ---------------------
 
                             status.info(
-                                "🔪 FINAL OBJECTION..."
+                                "🔪 Killer يصدر الحكم الأخير..."
                             )
 
 
-                            result = killer_final_objection(
-                                st.session_state.operator,
+                            result = run_killer_final(
+                                ideas,
+                                killer_data,
+                                rebuttal_data,
+                                research,
                                 status
                             )
 
 
                             if not result["ok"]:
 
-                                st.session_state.error = (
-                                    result["error"]
-                                )
+                                st.session_state[
+                                    "error"
+                                ] = result[
+                                    "error"
+                                ]
+
 
                             else:
 
-                                st.session_state.objection = (
-                                    result["text"]
+                                final_killer = (
+                                    result[
+                                        "data"
+                                    ]
                                 )
 
 
-                                # ========================
-                                # VERDICT
-                                # ========================
-
-                                status.info(
-                                    "🏛️ FINAL VERDICT..."
-                                )
+                                st.session_state[
+                                    "killer_final"
+                                ] = final_killer
 
 
-                                result = operator_final_verdict(
-                                    st.session_state.operator,
-                                    st.session_state.objection,
-                                    status
-                                )
+                                surviving_ids = [
+
+                                    item[
+                                        "idea_id"
+                                    ]
+
+                                    for item in final_killer[
+                                        "decisions"
+                                    ]
+
+                                    if item[
+                                        "decision"
+                                    ] == "SURVIVES"
+                                ]
 
 
-                                if not result["ok"]:
+                                surviving = [
 
-                                    st.session_state.error = (
-                                        result["error"]
+                                    idea
+
+                                    for idea in ideas
+
+                                    if idea[
+                                        "id"
+                                    ] in surviving_ids
+                                ]
+
+
+                                # -----------------
+                                # NONE SURVIVED
+                                # -----------------
+
+                                if not surviving:
+
+                                    st.session_state[
+                                        "operator"
+                                    ] = {
+                                        "evaluations": [],
+                                        "winner_exists": False,
+                                        "winner_idea_id": "",
+                                        "winner_reason": (
+                                            "لم تنج أي فكرة "
+                                            "من Red Team."
+                                        )
+                                    }
+
+
+                                    st.session_state[
+                                        "objection"
+                                    ] = (
+                                        "لا توجد فكرة ناجية "
+                                        "يمكن الاعتراض على اختيارها."
                                     )
 
-                                else:
 
-                                    st.session_state.verdict = (
-                                        result["text"]
+                                    st.session_state[
+                                        "verdict"
+                                    ] = (
+                                        "## FINAL VERDICT\n\n"
+                                        "KILL\n\n"
+                                        "لم تنج أي فكرة من "
+                                        "THE KILLER بعد البحث."
                                     )
 
 
                                     status.success(
-                                        "✅ انتهت المناظرة"
+                                        "✅ انتهت المناظرة: NO WINNER"
                                     )
+
+
+                                else:
+
+                                    # -------------
+                                    # OPERATOR
+                                    # -------------
+
+                                    status.info(
+                                        "📊 THE OPERATOR "
+                                        "يحسب الاقتصاديات..."
+                                    )
+
+
+                                    result = run_operator(
+                                        surviving,
+                                        research,
+                                        final_killer,
+                                        status
+                                    )
+
+
+                                    if not result["ok"]:
+
+                                        st.session_state[
+                                            "error"
+                                        ] = result[
+                                            "error"
+                                        ]
+
+
+                                    else:
+
+                                        operator_data = (
+                                            result[
+                                                "data"
+                                            ]
+                                        )
+
+
+                                        st.session_state[
+                                            "operator"
+                                        ] = operator_data
+
+
+                                        # ---------
+                                        # OBJECTION
+                                        # ---------
+
+                                        status.info(
+                                            "🔪 FINAL OBJECTION..."
+                                        )
+
+
+                                        result = final_objection(
+                                            operator_data,
+                                            surviving,
+                                            research,
+                                            status
+                                        )
+
+
+                                        if not result["ok"]:
+
+                                            st.session_state[
+                                                "error"
+                                            ] = result[
+                                                "error"
+                                            ]
+
+
+                                        else:
+
+                                            objection = (
+                                                result[
+                                                    "text"
+                                                ]
+                                            )
+
+
+                                            st.session_state[
+                                                "objection"
+                                            ] = objection
+
+
+                                            # -----
+                                            # VERDICT
+                                            # -----
+
+                                            status.info(
+                                                "🏛️ FINAL VERDICT..."
+                                            )
+
+
+                                            result = final_verdict(
+                                                operator_data,
+                                                objection,
+                                                surviving,
+                                                status
+                                            )
+
+
+                                            if not result["ok"]:
+
+                                                st.session_state[
+                                                    "error"
+                                                ] = result[
+                                                    "error"
+                                                ]
+
+
+                                            else:
+
+                                                st.session_state[
+                                                    "verdict"
+                                                ] = result[
+                                                    "text"
+                                                ]
+
+
+                                                status.success(
+                                                    "✅ انتهى Research Council"
+                                                )
 
 
 # =========================================================
@@ -1779,7 +3199,7 @@ if start:
 if st.session_state.error:
 
     st.error(
-        "حدث خطأ أثناء المناظرة."
+        "حدث خطأ ولم يصدر المجلس حكماً ناقصاً."
     )
 
 
@@ -1794,109 +3214,381 @@ if st.session_state.error:
 
 
 # =========================================================
-# BRIEF INFO
+# BLOCKED
 # =========================================================
 
-if st.session_state.case_brief:
+if st.session_state.blocked:
 
-    info = st.session_state.brief_info
+    st.divider()
 
-
-    if info:
-
-        if info["removed_protocol"]:
-
-            st.success(
-                "✅ تم حذف قسم الوكلاء والقواعد "
-                "من البرومبت تلقائياً لأنهم مدمجون في التطبيق."
-            )
+    st.header(
+        "🚫 أفكار أسقطها الفلتر"
+    )
 
 
-        if info["trimmed"]:
-
-            st.warning(
-                "⚠️ كان النص طويلاً جداً، "
-                "فتم اختصاره محلياً قبل إرساله."
-            )
-
-
-    with st.expander(
-        "📋 CASE BRIEF الذي استخدمه المجلس"
+    for item in (
+        st.session_state.blocked
     ):
 
-        st.markdown(
-            st.session_state.case_brief
+        st.warning(
+            f"**{item['idea']['name']}**\n\n"
+            f"{item['reason']}"
         )
 
 
 # =========================================================
-# RESULTS
+# IDEAS
 # =========================================================
 
-if st.session_state.hunter1:
+if st.session_state.ideas:
 
     st.divider()
 
     st.header(
-        "🎯 1. THE HUNTER"
-    )
-
-    st.markdown(
-        st.session_state.hunter1
+        "🎯 أفكار THE HUNTER"
     )
 
 
-if st.session_state.killer1:
+    for idea in (
+        st.session_state.ideas
+    ):
+
+        with st.expander(
+            idea["name"],
+            expanded=True
+        ):
+
+            render_idea(
+                idea
+            )
+
+
+# =========================================================
+# RESEARCH
+# =========================================================
+
+if st.session_state.research:
 
     st.divider()
 
     st.header(
-        "🔪 2. THE KILLER"
-    )
-
-    st.markdown(
-        st.session_state.killer1
+        "🔎 Web Research"
     )
 
 
-if st.session_state.hunter2:
+    for idea in (
+        st.session_state.ideas
+        or []
+    ):
+
+        result = (
+            st.session_state
+            .research
+            .get(
+                idea["id"],
+                {}
+            )
+        )
+
+
+        with st.expander(
+            f"🔎 {idea['name']}",
+            expanded=False
+        ):
+
+            st.markdown(
+                result.get(
+                    "text",
+                    ""
+                )
+            )
+
+
+            sources = result.get(
+                "sources",
+                []
+            )
+
+
+            if sources:
+
+                st.subheader(
+                    "المصادر"
+                )
+
+
+                for source in sources:
+
+                    st.markdown(
+                        f"- [{source.get('title', 'Source')}]"
+                        f"({source.get('url', '')})"
+                    )
+
+
+# =========================================================
+# KILLER
+# =========================================================
+
+if st.session_state.killer:
 
     st.divider()
 
     st.header(
-        "🎯 3. HUNTER REBUTTAL"
-    )
-
-    st.markdown(
-        st.session_state.hunter2
+        "🔪 THE KILLER"
     )
 
 
-if st.session_state.killer2:
+    for review in (
+        st.session_state
+        .killer[
+            "reviews"
+        ]
+    ):
+
+        st.subheader(
+            review[
+                "idea_id"
+            ]
+        )
+
+
+        st.markdown(
+            f"""
+**سبب الفشل 1:** {review["top_failure_reason_1"]}
+
+**سبب الفشل 2:** {review["top_failure_reason_2"]}
+
+**سبب الفشل 3:** {review["top_failure_reason_3"]}
+
+**Kill Shot:** {review["kill_shot"]}
+
+**الدليل الذي يقتلها فوراً:** {review["immediate_rejection_evidence"]}
+
+**الدليل المؤيد:** {review["research_supports_idea"]}
+
+**الدليل المضاد:** {review["research_hurts_idea"]}
+
+**Score:** {review["score_out_of_10"]}/10
+
+**Decision:** `{review["decision"]}`
+"""
+        )
+
+
+# =========================================================
+# REBUTTAL
+# =========================================================
+
+if st.session_state.rebuttal:
 
     st.divider()
 
     st.header(
-        "🔪 4. KILLER FINAL ATTACK"
+        "🎯 HUNTER REBUTTAL"
     )
 
-    st.markdown(
-        st.session_state.killer2
+
+    for item in (
+        st.session_state
+        .rebuttal[
+            "responses"
+        ]
+    ):
+
+        st.markdown(
+            f"""
+### {item["idea_id"]}
+
+**اعتراض صحيح:** {item["valid_objection"]}
+
+**اعتراض يرفضه Hunter:** {item["disputed_objection"]}
+
+**الدليل المطلوب:** {item["evidence_needed"]}
+
+**Position:** `{item["position"]}`
+"""
+        )
+
+
+# =========================================================
+# KILLER FINAL
+# =========================================================
+
+if st.session_state.killer_final:
+
+    st.divider()
+
+    st.header(
+        "🔪 KILLER FINAL"
     )
 
+
+    for item in (
+        st.session_state
+        .killer_final[
+            "decisions"
+        ]
+    ):
+
+        st.markdown(
+            f"""
+### {item["idea_id"]}
+
+**Decision:** `{item["decision"]}`
+
+**المشكلة المتبقية:** {item["remaining_problem"]}
+
+**WTP مثبتة؟** {item["wtp_real"]}
+
+**Distribution واقعية؟** {item["distribution_real"]}
+
+**Feature / Company:** {item["feature_or_company"]}
+
+**Red-Team Score:** {item["final_score_out_of_10"]}/10
+"""
+        )
+
+
+# =========================================================
+# OPERATOR
+# =========================================================
 
 if st.session_state.operator:
 
     st.divider()
 
     st.header(
-        "📊 5. THE OPERATOR"
+        "📊 THE OPERATOR"
     )
 
-    st.markdown(
+
+    operator = (
         st.session_state.operator
     )
 
+
+    evaluations = operator.get(
+        "evaluations",
+        []
+    )
+
+
+    if evaluations:
+
+        table_rows = []
+
+
+        for item in evaluations:
+
+            table_rows.append(
+                {
+                    "Idea": item[
+                        "idea_name"
+                    ],
+
+                    "Score": item[
+                        "total_score"
+                    ],
+
+                    "First Buyer": item[
+                        "first_buyer"
+                    ],
+
+                    "Price": item[
+                        "price"
+                    ],
+
+                    "Automation": (
+                        f"{item['automation_percent']}%"
+                    ),
+
+                    "Fastest Test": item[
+                        "fastest_test"
+                    ],
+
+                    "Biggest Risk": item[
+                        "biggest_risk"
+                    ]
+                }
+            )
+
+
+        st.dataframe(
+            table_rows,
+            use_container_width=True,
+            hide_index=True
+        )
+
+
+        for item in evaluations:
+
+            with st.expander(
+                f"{item['idea_name']} — "
+                f"{item['total_score']}/100"
+            ):
+
+                st.markdown(
+                    f"""
+**Severity:** {item["severity"]}/15
+
+**WTP:** {item["willingness_to_pay"]}/15
+
+**Distribution:** {item["distribution"]}/15
+
+**Automation:** {item["automation"]}/15
+
+**Recurring:** {item["recurring"]}/10
+
+**Competition:** {item["competition"]}/10
+
+**Moat:** {item["moat"]}/5
+
+**Speed to Revenue:** {item["speed_to_revenue"]}/10
+
+**Stack Fit:** {item["stack_fit"]}/5
+
+---
+
+**Gross Margin:** {item["gross_margin"]}
+
+**LTV:** {item["ltv"]}
+
+**CAC:** {item["cac"]}
+
+**$1k MRR:** {item["customers_for_1k_mrr"]}
+
+**$5k MRR:** {item["customers_for_5k_mrr"]}
+
+**$10k MRR:** {item["customers_for_10k_mrr"]}
+
+**Truth Test:** {item["truth_test"]}
+"""
+                )
+
+
+    if operator[
+        "winner_exists"
+    ]:
+
+        st.success(
+            f"WINNER: "
+            f"{operator['winner_idea_id']}\n\n"
+            f"{operator['winner_reason']}"
+        )
+
+    else:
+
+        st.warning(
+            "NO WINNER\n\n"
+            + operator[
+                "winner_reason"
+            ]
+        )
+
+
+# =========================================================
+# FINAL
+# =========================================================
 
 if st.session_state.objection:
 
@@ -1924,30 +3616,34 @@ if st.session_state.verdict:
     )
 
 
-    report = build_report(
-        st.session_state.original_question,
-        st.session_state.case_brief,
-        st.session_state.hunter1,
-        st.session_state.killer1,
-        st.session_state.hunter2,
-        st.session_state.killer2,
-        st.session_state.operator,
-        st.session_state.objection,
-        st.session_state.verdict
+    report = build_final_report(
+        st.session_state.ideas or [],
+        st.session_state.blocked or [],
+        st.session_state.research or {},
+        st.session_state.killer or {},
+        st.session_state.rebuttal or {},
+        st.session_state.killer_final or {},
+        st.session_state.operator or {},
+        st.session_state.objection or "",
+        st.session_state.verdict or ""
     )
 
 
     st.divider()
 
     st.header(
-        "📥 تحميل التقرير"
+        "📥 التقرير"
     )
 
 
     st.download_button(
-        label="📝 تحميل التقرير TXT",
-        data=report.encode("utf-8"),
-        file_name="MD_Investment_Debate.txt",
+        "📝 تحميل التقرير TXT",
+        data=report.encode(
+            "utf-8"
+        ),
+        file_name=(
+            "MD_Investment_Research.txt"
+        ),
         mime="text/plain",
         use_container_width=True
     )
@@ -1955,15 +3651,17 @@ if st.session_state.verdict:
 
     try:
 
-        pdf_bytes = create_pdf(
+        pdf = create_pdf(
             report
         )
 
 
         st.download_button(
-            label="📄 تحميل التقرير PDF",
-            data=pdf_bytes,
-            file_name="MD_Investment_Debate.pdf",
+            "📄 تحميل التقرير PDF",
+            data=pdf,
+            file_name=(
+                "MD_Investment_Research.pdf"
+            ),
             mime="application/pdf",
             use_container_width=True
         )
@@ -1971,13 +3669,8 @@ if st.session_state.verdict:
 
     except Exception as e:
 
-        st.warning(
-            "تعذر إنشاء PDF."
-        )
-
-
         with st.expander(
-            "🔧 سبب مشكلة PDF"
+            "🔧 مشكلة PDF"
         ):
 
             st.code(
@@ -1990,20 +3683,25 @@ if st.session_state.verdict:
 # =========================================================
 
 if (
-    st.session_state.case_brief
+    st.session_state.ideas
     or st.session_state.error
+    or st.session_state.verdict
 ):
 
     st.divider()
 
 
     if st.button(
-        "🗑️ مسح المناظرة والبدء من جديد"
+        "🗑️ مسح كل شيء وبدء بحث جديد"
     ):
 
-        for key, value in DEFAULT_STATE.items():
+        for key, value in (
+            DEFAULT_STATE.items()
+        ):
 
-            st.session_state[key] = value
+            st.session_state[
+                key
+            ] = value
 
 
         st.rerun()
