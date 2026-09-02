@@ -17,7 +17,7 @@ from fpdf import FPDF
 # BUILD
 # =========================================================
 
-BUILD_ID = "V8.2-EVIDENCE-LOCK-TARGETED-RESEARCH"
+BUILD_ID = "V8.3-EXACT-JTBD-EVIDENCE-PROOF"
 
 
 # =========================================================
@@ -542,10 +542,13 @@ def hunter_core_rules():
 - إعادة تغليف فكرة رفضها المستخدم
 
 لكل فكرة:
-- حدد Job-to-be-Done بدقة.
-- عرّف المنافس المباشر بدقة.
+- حدد Job-to-be-Done بدقة وبصيغة فعل/نتيجة واضحة.
+- عرّف المنافس المباشر بدقة: يجب أن يطابق نفس المشتري تقريباً، نفس trigger/input،
+  نفس المهمة الأساسية، ونفس output/action النهائي.
+- إذا كان المنتج في نفس المجال لكنه يحل جزءاً مختلفاً من المهمة فهو ADJACENT وليس Direct.
+- اختلاف نوع الضريبة/نوع الامتثال/نوع التدفق المالي اختلاف جوهري وليس Feature صغيرة.
 - اشرح ما الذي لا يُعد منافساً مباشراً.
-- Search Terms يجب أن تكون قصيرة ومحددة.
+- Search Terms يجب أن تبحث عن نفس الفعل النهائي، لا عن المجال العام فقط.
 - لا تخترع أرقام سوق أو قوانين كحقائق.
 
 إذا كانت الفكرة قريبة من فكرة مرفوضة:
@@ -806,41 +809,152 @@ def dedupe_sources(sources, limit=14):
 
 
 # =========================================================
-# RELEVANCE JUDGE
+# RELEVANCE JUDGE — V8.3 EXACT JTBD
 # =========================================================
+
+SOURCE_CATEGORIES = [
+    "DIRECT_COMPETITOR",
+    "ADJACENT_COMPETITOR",
+    "PRICING_EVIDENCE",
+    "PROBLEM_EVIDENCE",
+    "WTP_EVIDENCE",
+    "DISTRIBUTION_SURFACE",
+    "DISTRIBUTION_PROOF",
+    "REGULATORY_EVIDENCE",
+    "PLATFORM_RISK",
+    "BACKGROUND",
+    "IRRELEVANT",
+]
 
 source_eval_schema = obj(
     {
         "source_id": {"type": "string"},
         "relevance_score": {"type": "integer", "minimum": 0, "maximum": 100},
+        "job_match_score": {"type": "integer", "minimum": 0, "maximum": 100},
         "same_job_to_be_done": {"type": "boolean"},
-        "authoritative": {"type": "boolean"},
+        "critical_job_difference": {"type": "string"},
+        "material_job_difference": {"type": "boolean"},
+        "authority_type": {
+            "type": "string",
+            "enum": [
+                "OFFICIAL_GOVERNMENT",
+                "OFFICIAL_VENDOR",
+                "INDUSTRY_PRIMARY",
+                "SECONDARY",
+                "UNKNOWN",
+            ],
+        },
+        "pricing_explicit": {"type": "boolean"},
+        "wtp_signal": {
+            "type": "string",
+            "enum": ["NONE", "REAL_PAYMENT_SIGNAL"],
+        },
+        "distribution_signal": {
+            "type": "string",
+            "enum": ["NONE", "SURFACE_ONLY", "PROOF"],
+        },
         "categories": arr(
-            {
-                "type": "string",
-                "enum": [
-                    "DIRECT_COMPETITOR",
-                    "PRICING_EVIDENCE",
-                    "WTP_EVIDENCE",
-                    "DISTRIBUTION_EVIDENCE",
-                    "REGULATORY_EVIDENCE",
-                    "PLATFORM_RISK",
-                    "BACKGROUND",
-                    "IRRELEVANT",
-                ],
-            },
+            {"type": "string", "enum": SOURCE_CATEGORIES},
             1,
-            4,
+            5,
         ),
         "why_relevant": {"type": "string"},
     }
 )
 
-RELEVANCE_SCHEMA = obj(
-    {
-        "evaluations": arr(source_eval_schema),
-    }
-)
+RELEVANCE_SCHEMA = obj({"evaluations": arr(source_eval_schema)})
+
+
+def normalize_source_evaluation(ev):
+    ev = dict(ev or {})
+    categories = list(dict.fromkeys(ev.get("categories", []) or []))
+
+    relevance = int(ev.get("relevance_score", 0) or 0)
+    job_match = int(ev.get("job_match_score", 0) or 0)
+    same_job = bool(ev.get("same_job_to_be_done", False))
+    material_difference = bool(ev.get("material_job_difference", False))
+    authority = ev.get("authority_type", "UNKNOWN")
+    pricing_explicit = bool(ev.get("pricing_explicit", False))
+    wtp_signal = ev.get("wtp_signal", "NONE")
+    distribution_signal = ev.get("distribution_signal", "NONE")
+
+    # Exact JTBD lock:
+    # DIRECT means same core job, not merely same industry/domain.
+    if "DIRECT_COMPETITOR" in categories:
+        if not (
+            same_job
+            and not material_difference
+            and relevance >= 80
+            and job_match >= 80
+        ):
+            categories = [c for c in categories if c != "DIRECT_COMPETITOR"]
+            if relevance >= 50 and "ADJACENT_COMPETITOR" not in categories:
+                categories.append("ADJACENT_COMPETITOR")
+
+    if "DIRECT_COMPETITOR" in categories and "ADJACENT_COMPETITOR" in categories:
+        categories = [c for c in categories if c != "ADJACENT_COMPETITOR"]
+
+    # Explicit pricing only.
+    if "PRICING_EVIDENCE" in categories and not pricing_explicit:
+        categories = [c for c in categories if c != "PRICING_EVIDENCE"]
+
+    # Paying taxes / having a problem is NOT WTP.
+    if "WTP_EVIDENCE" in categories and wtp_signal != "REAL_PAYMENT_SIGNAL":
+        categories = [c for c in categories if c != "WTP_EVIDENCE"]
+
+    # A directory/community is only a surface, not proof the channel converts.
+    if distribution_signal == "SURFACE_ONLY":
+        categories = [c for c in categories if c != "DISTRIBUTION_PROOF"]
+        if "DISTRIBUTION_SURFACE" not in categories:
+            categories.append("DISTRIBUTION_SURFACE")
+    elif distribution_signal == "PROOF":
+        if "DISTRIBUTION_PROOF" not in categories:
+            categories.append("DISTRIBUTION_PROOF")
+    else:
+        categories = [
+            c
+            for c in categories
+            if c not in ["DISTRIBUTION_SURFACE", "DISTRIBUTION_PROOF"]
+        ]
+
+    # Regulatory proof must come from an official authority/law source.
+    if "REGULATORY_EVIDENCE" in categories:
+        if authority != "OFFICIAL_GOVERNMENT":
+            categories = [c for c in categories if c != "REGULATORY_EVIDENCE"]
+
+    # Platform risk must be evidenced by the platform/vendor itself and closely match the job.
+    if "PLATFORM_RISK" in categories:
+        if not (
+            authority == "OFFICIAL_VENDOR"
+            and not material_difference
+            and relevance >= 75
+            and job_match >= 70
+        ):
+            categories = [c for c in categories if c != "PLATFORM_RISK"]
+
+    if relevance < 25:
+        categories = ["IRRELEVANT"]
+    else:
+        if "IRRELEVANT" in categories and len(categories) > 1:
+            categories = [c for c in categories if c != "IRRELEVANT"]
+
+        if not categories:
+            categories = ["BACKGROUND"]
+
+    ev["categories"] = list(dict.fromkeys(categories))
+    ev["relevance_score"] = relevance
+    ev["job_match_score"] = job_match
+    ev["same_job_to_be_done"] = same_job
+    ev["material_job_difference"] = material_difference
+    ev["authority_type"] = authority
+    ev["pricing_explicit"] = pricing_explicit
+    ev["wtp_signal"] = wtp_signal
+    ev["distribution_signal"] = distribution_signal
+    ev["critical_job_difference"] = str(
+        ev.get("critical_job_difference", "")
+    ).strip()
+    ev["why_relevant"] = str(ev.get("why_relevant", "")).strip()
+    return ev
 
 
 def evaluate_source_relevance(idea, sources, status):
@@ -854,43 +968,80 @@ def evaluate_source_relevance(idea, sources, status):
                 "query_type": source["query_type"],
                 "title": source["title"],
                 "url": source["url"],
-                "snippet": source["snippet"],
-                "page_excerpt": cut(source.get("page_excerpt", ""), 900),
+                "snippet": cut(source["snippet"], 420),
+                "page_excerpt": cut(source.get("page_excerpt", ""), 550),
             }
         )
 
     system = """
-أنت Research Relevance Judge.
+أنت Research Relevance Judge شديد الصرامة.
 
-لا تحكم على جودة فكرة المشروع.
-وظيفتك فقط تقييم هل كل مصدر فعلاً متعلق بنفس Job-to-be-Done.
+لا تحكم على جاذبية فكرة المشروع. صنّف الأدلة فقط.
+
+أولاً قارن Job-to-be-Done بدقة عبر:
+1) من هو المشتري/المستخدم،
+2) ما الـtrigger أو input،
+3) ما المهمة الأساسية أو الالتزام الذي يُنفذ،
+4) ما الـoutput/action النهائي،
+5) هل يستطيع المصدر/المنتج أن يحل محل المنتج المقترح فعلياً.
 
 DIRECT_COMPETITOR:
-شركة/منتج يؤدي نفس المهمة الأساسية لنفس نوع المشتري تقريباً.
+يؤدي نفس المهمة الجوهرية تقريباً ويمكن أن يحل محل المنتج.
+يجب أن يكون same_job_to_be_done=true و job_match_score مرتفعاً.
+وجود المنتج في نفس المجال لا يكفي.
+مثال عام: sales-tax/VAT calculation ليس نفس income-tax withholding/remittance
+إذا كانت الفكرة تتطلب حجز ضريبة دخل وتحويلها.
 
-PRICING_EVIDENCE:
-مصدر يقدم سعراً حقيقياً أو نموذج تسعير متعلق بنفس المهمة.
+ADJACENT_COMPETITOR:
+نفس المجال أو workflow قريب، لكنه لا ينفذ نفس المهمة النهائية كاملة.
+
+PROBLEM_EVIDENCE:
+يثبت أن الألم/الالتزام/التكلفة موجودة.
+مهم: وجود التزام ضريبي أو مشكلة لا يثبت willingness-to-pay.
 
 WTP_EVIDENCE:
-دليل أن المشتري يدفع أو أن المشكلة لها تكلفة مالية واضحة.
+يحتاج REAL PAYMENT SIGNAL:
+- عميل مدفوع أو case study لعميل،
+- transaction volume مدفوع،
+- survey/interview صريح عن الدفع،
+- buyer spend فعلي،
+- evidence أن نفس المشتري يشتري نفس الحل.
+مجرد صفحة أسعار أو وجود المشكلة لا يكفي وحده.
 
-DISTRIBUTION_EVIDENCE:
-دليل على قناة وصول فعلية للمشتري: marketplace, directory, ecosystem, public list, buyer community, etc.
+PRICING_EVIDENCE:
+سعر/رسوم/نسبة/خطة/نطاق سعر صريح لنفس الحل أو حل قريب جداً.
+pricing_explicit=true فقط عند وجود رقم/نموذج سعر واضح في المصدر.
+
+DISTRIBUTION_SURFACE:
+وجود directory, marketplace, community, association أو ecosystem يمكن الوصول من خلاله للمشتري.
+هذا لا يثبت أن القناة تنتج عملاء.
+
+DISTRIBUTION_PROOF:
+دليل أقوى مثل:
+- شراكة/تكامل فعلي مع قناة،
+- marketplace listing لمنتج مماثل،
+- case study يذكر channel/acquisition،
+- measurable referral/affiliate acquisition،
+- دليل أن buyers adopt integrations عبر هذه القناة.
+distribution_signal=PROOF فقط عند وجود هذا النوع من الدليل.
 
 REGULATORY_EVIDENCE:
-مصدر تنظيمي/رسمي أو وثيقة قوية توضح قيداً قانونياً أو API/ترخيصاً متعلقاً مباشرة بالمشروع.
+قانون/جهة حكومية/منظم رسمي فقط.
+authority_type يجب أن يكون OFFICIAL_GOVERNMENT.
 
 PLATFORM_RISK:
-دليل أن منصة أساسية/مزود بنية يقدم نفس الوظيفة أو قد يبتلعها.
+مصدر رسمي من المنصة الأساسية نفسها يثبت أنها تقدم أو أعلنت وظيفة شديدة القرب من JTBD.
+مجرد توقع أنها "قد تبنيها" لا يكفي.
 
-BACKGROUND:
-مفيد لفهم المجال لكنه ليس دليلاً على منافس/سعر/WTP/توزيع/تنظيم.
+authority_type:
+OFFICIAL_GOVERNMENT = جهة حكومية/منظم/نص رسمي.
+OFFICIAL_VENDOR = صفحة أو docs رسمية لشركة/منصة المنتج.
+INDUSTRY_PRIMARY = شركة/مؤسسة تعمل في المجال تتحدث عن منتجها/عملائها.
+SECONDARY = مدونة/صحافة/مراجعة/دليل طرف ثالث.
+UNKNOWN = غير واضح.
 
-IRRELEVANT:
-لا يتكلم عن نفس Job-to-be-Done.
-
-لا تعتبر Software directory العام منافساً مباشراً.
-لا تعتبر أداة تؤدي وظيفة مختلفة منافساً مباشراً.
+إذا وجدت اختلافاً جوهرياً، اكتبه صراحة في critical_job_difference
+واجعل material_job_difference=true. اختلاف جوهري واحد يمنع DIRECT_COMPETITOR.
 """
 
     prompt = f"""
@@ -898,12 +1049,14 @@ IDEA:
 
 Name: {idea["name"]}
 Buyer: {idea["buyer"]}
+Problem: {idea["problem"]}
+Product: {idea["product"]}
 Job-to-be-Done: {idea["job_to_be_done"]}
 
-Direct competitor MUST mean:
+DIRECT COMPETITOR MUST:
 {idea["direct_competitor_definition"]}
 
-NOT a direct competitor:
+NOT A DIRECT COMPETITOR:
 {idea["not_a_direct_competitor"]}
 
 SOURCES:
@@ -914,9 +1067,9 @@ SOURCES:
         OPERATOR_MODEL,
         system,
         prompt,
-        "source_relevance_v8",
+        "source_relevance_v83",
         RELEVANCE_SCHEMA,
-        1500,
+        2100,
         f"Relevance Judge — {idea['name']}",
         status,
         "low",
@@ -925,48 +1078,134 @@ SOURCES:
     if not result["ok"]:
         return result
 
-    mapping = {x["source_id"]: x for x in result["data"]["evaluations"]}
+    mapping = {
+        x["source_id"]: normalize_source_evaluation(x)
+        for x in result["data"]["evaluations"]
+    }
 
     for source in sources:
         source["evaluation"] = mapping.get(
             source["source_id"],
-            {
-                "source_id": source["source_id"],
-                "relevance_score": 0,
-                "same_job_to_be_done": False,
-                "authoritative": False,
-                "categories": ["IRRELEVANT"],
-                "why_relevant": "لم يرجع تقييم للمصدر.",
-            },
+            normalize_source_evaluation(
+                {
+                    "source_id": source["source_id"],
+                    "relevance_score": 0,
+                    "job_match_score": 0,
+                    "same_job_to_be_done": False,
+                    "critical_job_difference": "لم يرجع تقييم للمصدر.",
+                    "material_job_difference": True,
+                    "authority_type": "UNKNOWN",
+                    "pricing_explicit": False,
+                    "wtp_signal": "NONE",
+                    "distribution_signal": "NONE",
+                    "categories": ["IRRELEVANT"],
+                    "why_relevant": "لم يرجع تقييم للمصدر.",
+                }
+            ),
         )
 
     return {"ok": True, "sources": sources, "error": None}
 
-
 # =========================================================
-# RESEARCH GATE
+# RESEARCH GATE — V8.3
 # =========================================================
 
-def category_sources(sources, category, min_score=60):
+def source_qualifies_for_category(source, category):
+    ev = source.get("evaluation", {})
+    categories = ev.get("categories", [])
+    relevance = ev.get("relevance_score", 0)
+    job_match = ev.get("job_match_score", 0)
+    same_job = ev.get("same_job_to_be_done", False)
+    material_difference = ev.get("material_job_difference", False)
+
+    if "IRRELEVANT" in categories:
+        return False
+
+    if category == "DIRECT_COMPETITOR":
+        return (
+            "DIRECT_COMPETITOR" in categories
+            and relevance >= 80
+            and job_match >= 80
+            and same_job
+            and not material_difference
+        )
+
+    if category == "ADJACENT_COMPETITOR":
+        return (
+            "ADJACENT_COMPETITOR" in categories
+            and relevance >= 50
+        )
+
+    if category == "PRICING_EVIDENCE":
+        return (
+            "PRICING_EVIDENCE" in categories
+            and relevance >= 60
+            and ev.get("pricing_explicit", False)
+        )
+
+    if category == "PROBLEM_EVIDENCE":
+        return (
+            "PROBLEM_EVIDENCE" in categories
+            and relevance >= 55
+        )
+
+    if category == "WTP_EVIDENCE":
+        return (
+            "WTP_EVIDENCE" in categories
+            and relevance >= 65
+            and ev.get("wtp_signal") == "REAL_PAYMENT_SIGNAL"
+        )
+
+    if category == "DISTRIBUTION_SURFACE":
+        return (
+            "DISTRIBUTION_SURFACE" in categories
+            and relevance >= 50
+            and ev.get("distribution_signal") in ["SURFACE_ONLY", "PROOF"]
+        )
+
+    if category == "DISTRIBUTION_PROOF":
+        return (
+            "DISTRIBUTION_PROOF" in categories
+            and relevance >= 65
+            and ev.get("distribution_signal") == "PROOF"
+        )
+
+    if category == "REGULATORY_EVIDENCE":
+        return (
+            "REGULATORY_EVIDENCE" in categories
+            and relevance >= 65
+            and ev.get("authority_type") == "OFFICIAL_GOVERNMENT"
+        )
+
+    if category == "PLATFORM_RISK":
+        return (
+            "PLATFORM_RISK" in categories
+            and relevance >= 75
+            and job_match >= 70
+            and not material_difference
+            and ev.get("authority_type") == "OFFICIAL_VENDOR"
+        )
+
+    return relevance >= 60
+
+
+def category_sources(sources, category):
     return [
-        s
-        for s in sources
-        if s.get("evaluation", {}).get("relevance_score", 0) >= min_score
-        and category in s.get("evaluation", {}).get("categories", [])
-        and "IRRELEVANT" not in s.get("evaluation", {}).get("categories", [])
+        source
+        for source in sources
+        if source_qualifies_for_category(source, category)
     ]
 
 
 def research_gate(idea, sources):
-    direct = category_sources(sources, "DIRECT_COMPETITOR", 65)
-    pricing = category_sources(sources, "PRICING_EVIDENCE", 60)
-    wtp = category_sources(sources, "WTP_EVIDENCE", 60)
-    distribution = category_sources(sources, "DISTRIBUTION_EVIDENCE", 60)
-    regulatory = [
-        s
-        for s in category_sources(sources, "REGULATORY_EVIDENCE", 65)
-        if s.get("evaluation", {}).get("authoritative", False)
-    ]
+    direct = category_sources(sources, "DIRECT_COMPETITOR")
+    adjacent = category_sources(sources, "ADJACENT_COMPETITOR")
+    pricing = category_sources(sources, "PRICING_EVIDENCE")
+    problem = category_sources(sources, "PROBLEM_EVIDENCE")
+    wtp = category_sources(sources, "WTP_EVIDENCE")
+    distribution_surface = category_sources(sources, "DISTRIBUTION_SURFACE")
+    distribution_proof = category_sources(sources, "DISTRIBUTION_PROOF")
+    regulatory = category_sources(sources, "REGULATORY_EVIDENCE")
 
     relevant_domains = {
         domain(s["url"])
@@ -977,20 +1216,20 @@ def research_gate(idea, sources):
     }
 
     checks = {
-        "2_direct_competitors": len(direct) >= 2,
+        "2_exact_direct_competitors": len(direct) >= 2,
+        "problem_evidence": len(problem) >= 1,
         "pricing_evidence": len(pricing) >= 1,
-        "wtp_evidence": len(wtp) >= 1,
-        "distribution_evidence": len(distribution) >= 1,
+        "real_wtp_evidence": len(wtp) >= 1,
+        "distribution_proof": len(distribution_proof) >= 1,
         "3_relevant_domains": len(relevant_domains) >= 3,
-        "regulatory_evidence_if_needed": (
+        "official_regulatory_evidence_if_needed": (
             len(regulatory) >= 1 if idea["regulatory_sensitive"] else True
         ),
     }
 
-    score = sum(1 for v in checks.values() if v)
+    score = sum(1 for value in checks.values() if value)
     max_score = len(checks)
 
-    # V8.2: weak/irrelevant evidence is not a technical failure.
     status = "SUFFICIENT" if score == max_score else "INSUFFICIENT_EVIDENCE"
 
     return {
@@ -999,9 +1238,16 @@ def research_gate(idea, sources):
         "max_score": max_score,
         "checks": checks,
         "direct_competitors": [s["source_id"] for s in direct],
+        "adjacent_competitors": [s["source_id"] for s in adjacent],
+        "problem_sources": [s["source_id"] for s in problem],
         "pricing_sources": [s["source_id"] for s in pricing],
         "wtp_sources": [s["source_id"] for s in wtp],
-        "distribution_sources": [s["source_id"] for s in distribution],
+        "distribution_surface_sources": [
+            s["source_id"] for s in distribution_surface
+        ],
+        "distribution_proof_sources": [
+            s["source_id"] for s in distribution_proof
+        ],
         "regulatory_sources": [s["source_id"] for s in regulatory],
         "relevant_domain_count": len(relevant_domains),
     }
@@ -1009,20 +1255,24 @@ def research_gate(idea, sources):
 
 def missing_query_types(gate):
     missing = []
-    if not gate["checks"]["2_direct_competitors"]:
+
+    if not gate["checks"]["2_exact_direct_competitors"]:
         missing.append("direct_competitors")
+    if not gate["checks"]["problem_evidence"]:
+        missing.append("problem")
     if not gate["checks"]["pricing_evidence"]:
         missing.append("pricing")
-    if not gate["checks"]["wtp_evidence"]:
+    if not gate["checks"]["real_wtp_evidence"]:
         missing.append("wtp")
-    if not gate["checks"]["distribution_evidence"]:
-        missing.append("distribution")
-    if not gate["checks"]["regulatory_evidence_if_needed"]:
+    if not gate["checks"]["distribution_proof"]:
+        missing.append("distribution_proof")
+    if not gate["checks"]["official_regulatory_evidence_if_needed"]:
         missing.append("regulatory")
+
     return missing
 
 # =========================================================
-# TARGETED RESEARCH
+# TARGETED RESEARCH — V8.3
 # =========================================================
 
 MAX_RESEARCH_ROUNDS = 3
@@ -1033,12 +1283,18 @@ def base_queries(idea):
         ("direct_competitors", idea["search_term_1"]),
         ("direct_competitors", idea["search_term_2"]),
         ("direct_competitors", idea["search_term_3"]),
+        (
+            "problem",
+            f'"{idea["buyer"]}" "{cut(idea["problem"], 180)}" cost pain manual',
+        ),
         ("pricing", idea["pricing_search_term"]),
         ("wtp", idea["wtp_search_term"]),
-        ("distribution", idea["distribution_search_term"]),
+        ("distribution_proof", idea["distribution_search_term"]),
     ]
+
     if idea["regulatory_sensitive"] and idea["regulatory_search_term"].strip():
         queries.append(("regulatory", idea["regulatory_search_term"]))
+
     return queries
 
 
@@ -1046,23 +1302,23 @@ def brand_hint(title):
     title = str(title or "").strip()
     if not title:
         return ""
+
     first = re.split(r"\s*[|–—:]\s*|\s+-\s+", title, maxsplit=1)[0]
     return cut(first, 70).replace("\n", " ").strip()
 
 
 def direct_competitor_hints(sources, limit=4):
     hints = []
+
     for source in sources:
-        ev = source.get("evaluation", {})
-        if (
-            ev.get("relevance_score", 0) >= 65
-            and "DIRECT_COMPETITOR" in ev.get("categories", [])
-        ):
+        if source_qualifies_for_category(source, "DIRECT_COMPETITOR"):
             hint = brand_hint(source.get("title", ""))
             if hint and hint not in hints:
                 hints.append(hint)
+
         if len(hints) >= limit:
             break
+
     return hints
 
 
@@ -1073,78 +1329,120 @@ def retry_queries_for(idea, missing_types, sources=None, round_no=2):
 
     base = {
         "direct_competitors": [
-            f'"{idea["job_to_be_done"]}" software',
-            f'"{idea["job_to_be_done"]}" API service competitor',
+            f'"{idea["job_to_be_done"]}" software API',
+            f'"{idea["job_to_be_done"]}" service competitor',
             f'"{idea["direct_competitor_definition"]}"',
+            f'"{idea["name"]}" alternatives exact workflow',
+        ],
+        "problem": [
+            f'"{idea["buyer"]}" "{cut(idea["problem"], 160)}" cost',
+            f'"{idea["job_to_be_done"]}" manual process errors delays',
+            f'"{idea["job_to_be_done"]}" compliance risk cost',
         ],
         "pricing": [
             f'"{idea["job_to_be_done"]}" pricing fees',
-            f'"{idea["job_to_be_done"]}" API pricing SaaS',
+            f'"{idea["job_to_be_done"]}" API pricing transaction fee',
         ],
         "wtp": [
-            f'"{idea["buyer"]}" "{idea["problem"]}" cost ROI',
-            f'"{idea["job_to_be_done"]}" customer case study ROI',
-            f'"{idea["job_to_be_done"]}" paid service customers',
+            f'"{idea["job_to_be_done"]}" customer case study paid',
+            f'"{idea["job_to_be_done"]}" customers transaction volume',
+            f'"{idea["buyer"]}" paid solution "{idea["job_to_be_done"]}"',
+            f'"{idea["job_to_be_done"]}" survey willingness to pay',
         ],
-        "distribution": [
-            f'"{idea["buyer"]}" marketplace directory association',
-            f'"{idea["buyer"]}" integration marketplace partner program',
-            f'"{idea["job_to_be_done"]}" referral affiliate marketplace',
+        "distribution_proof": [
+            f'"{idea["job_to_be_done"]}" integration partner case study',
+            f'"{idea["job_to_be_done"]}" marketplace app listing integration',
+            f'"{idea["buyer"]}" adopted integration case study',
+            f'"{idea["job_to_be_done"]}" referral affiliate customer acquisition',
         ],
         "regulatory": [
             idea.get("regulatory_search_term", ""),
-            f'"{idea["job_to_be_done"]}" regulation license official government',
-            f'"{idea["job_to_be_done"]}" API legal requirements official',
+            f'site:.gov "{idea["job_to_be_done"]}"',
+            f'"{idea["job_to_be_done"]}" regulator official law',
         ],
     }
 
     for competitor in competitors:
         if "pricing" in missing_types:
-            base["pricing"].append(f'"{competitor}" pricing fees plans')
-        if "wtp" in missing_types:
-            base["wtp"].append(f'"{competitor}" customers case study reviews')
-        if "distribution" in missing_types:
-            base["distribution"].append(
-                f'"{competitor}" referral affiliate partner marketplace'
+            base["pricing"].extend(
+                [
+                    f'"{competitor}" pricing fees',
+                    f'"{competitor}" transaction fee pricing',
+                ]
             )
-            base["distribution"].append(
-                f'"{competitor}" integration marketplace app directory'
+
+        if "wtp" in missing_types:
+            base["wtp"].extend(
+                [
+                    f'"{competitor}" customer case study paid customers',
+                    f'"{competitor}" customers transaction volume',
+                    f'"{competitor}" reviews pricing customers',
+                ]
+            )
+
+        if "distribution_proof" in missing_types:
+            base["distribution_proof"].extend(
+                [
+                    f'"{competitor}" integration partner case study',
+                    f'"{competitor}" marketplace app listing',
+                    f'"{competitor}" referral affiliate partner',
+                    f'"{competitor}" customer acquisition channel case study',
+                ]
             )
 
     if round_no >= 3:
+        if "direct_competitors" in missing_types:
+            base["direct_competitors"].append(
+                f'"{idea["job_to_be_done"]}" exact alternative platform'
+            )
+
         if "pricing" in missing_types:
             base["pricing"].append(
-                f'"{idea["name"]}" alternatives pricing transaction fee'
+                f'"{idea["name"]}" alternatives pricing fee'
             )
+
         if "wtp" in missing_types:
             base["wtp"].append(
-                f'"{idea["job_to_be_done"]}" buyer pays per month per transaction'
+                f'"{idea["job_to_be_done"]}" buyer spend paid pilot'
             )
-        if "distribution" in missing_types:
-            base["distribution"].append(
-                f'"{idea["buyer"]}" community directory platform ecosystem'
+
+        if "distribution_proof" in missing_types:
+            base["distribution_proof"].extend(
+                [
+                    f'"{idea["buyer"]}" integration adoption case study',
+                    f'"{idea["job_to_be_done"]}" partner announcement integration',
+                    f'"{idea["job_to_be_done"]}" app marketplace customers',
+                ]
             )
 
     seen = set()
+
     for missing in missing_types:
         for query in base.get(missing, []):
             query = str(query or "").strip()
             if query and query not in seen:
                 seen.add(query)
                 output.append((missing, query))
-    return output[:10]
+
+    return output[:12]
 
 
 def run_search_queries(queries, status, idea_name):
     found = []
     errors = []
+
     for idx, (query_type, query) in enumerate(queries, 1):
-        status.info(f"🔎 {idea_name}: بحث {idx}/{len(queries)} — {query_type}")
+        status.info(
+            f"🔎 {idea_name}: بحث {idx}/{len(queries)} — {query_type}"
+        )
+
         try:
             found.extend(ddgs_search(query, query_type, max_results=5))
         except Exception as e:
             errors.append(f"{query_type}: {query}: {e}")
+
         time.sleep(0.8)
+
     return [x for x in found if x.get("url")], errors
 
 
@@ -1152,10 +1450,13 @@ def research_one_idea(idea, status):
     all_errors = []
 
     phase1_sources, phase1_errors = run_search_queries(
-        base_queries(idea), status, idea["name"]
+        base_queries(idea),
+        status,
+        idea["name"],
     )
+
     all_errors.extend(phase1_errors)
-    sources = dedupe_sources(phase1_sources, limit=18)
+    sources = dedupe_sources(phase1_sources, limit=14)
 
     if not sources:
         return {
@@ -1163,7 +1464,10 @@ def research_one_idea(idea, status):
             "research_status": "RESEARCH_FAILED",
             "gate": None,
             "sources": [],
-            "error": "DDGS returned no usable sources.\n" + "\n".join(all_errors[-8:]),
+            "error": (
+                "DDGS returned no usable sources.\n"
+                + "\n".join(all_errors[-8:])
+            ),
         }
 
     extract_best_pages(sources, max_pages=3)
@@ -1192,26 +1496,40 @@ def research_one_idea(idea, status):
             sources=sources,
             round_no=round_no,
         )
+
         if not retry_qs:
             break
 
         status.warning(
-            f"🔁 {idea['name']}: Research Round {round_no}/{MAX_RESEARCH_ROUNDS}. "
+            f"🔁 {idea['name']}: Research Round "
+            f"{round_no}/{MAX_RESEARCH_ROUNDS}. "
             f"المفقود فقط: {', '.join(missing)}"
         )
 
-        extra, retry_errors = run_search_queries(retry_qs, status, idea["name"])
+        extra, retry_errors = run_search_queries(
+            retry_qs,
+            status,
+            idea["name"],
+        )
+
         all_errors.extend(retry_errors)
+
         if not extra:
             continue
 
-        combined = dedupe_sources(sources + extra, limit=22)
-        extract_best_pages(combined, max_pages=5)
-        judged_retry = evaluate_source_relevance(idea, combined, status)
+        combined = dedupe_sources(sources + extra, limit=18)
+        extract_best_pages(combined, max_pages=4)
+
+        judged_retry = evaluate_source_relevance(
+            idea,
+            combined,
+            status,
+        )
 
         if not judged_retry["ok"]:
             all_errors.append(
-                f"Round {round_no} relevance judge failed: {judged_retry['error']}"
+                f"Round {round_no} relevance judge failed: "
+                f"{judged_retry['error']}"
             )
             continue
 
@@ -1229,10 +1547,19 @@ def research_one_idea(idea, status):
 
 def research_all(ideas, status):
     research = {}
+
     for idx, idea in enumerate(ideas, 1):
-        status.info(f"🌐 Evidence Research {idx}/{len(ideas)}: {idea['name']}")
-        research[idea["id"]] = research_one_idea(idea, status)
+        status.info(
+            f"🌐 Evidence Research {idx}/{len(ideas)}: {idea['name']}"
+        )
+
+        research[idea["id"]] = research_one_idea(
+            idea,
+            status,
+        )
+
         time.sleep(1)
+
     return research
 
 # =========================================================
@@ -1241,16 +1568,23 @@ def research_all(ideas, status):
 
 def source_packet(source):
     ev = source["evaluation"]
+
     return {
         "source_id": source["source_id"],
         "title": source["title"],
         "url": source["url"],
         "query_type": source["query_type"],
-        "snippet": source["snippet"],
-        "page_excerpt": cut(source.get("page_excerpt", ""), 800),
+        "snippet": cut(source["snippet"], 500),
+        "page_excerpt": cut(source.get("page_excerpt", ""), 700),
         "relevance_score": ev["relevance_score"],
+        "job_match_score": ev.get("job_match_score", 0),
         "same_job_to_be_done": ev["same_job_to_be_done"],
-        "authoritative": ev["authoritative"],
+        "critical_job_difference": ev.get("critical_job_difference", ""),
+        "material_job_difference": ev.get("material_job_difference", False),
+        "authority_type": ev.get("authority_type", "UNKNOWN"),
+        "pricing_explicit": ev.get("pricing_explicit", False),
+        "wtp_signal": ev.get("wtp_signal", "NONE"),
+        "distribution_signal": ev.get("distribution_signal", "NONE"),
         "categories": ev["categories"],
         "why_relevant": ev["why_relevant"],
     }
@@ -1258,23 +1592,26 @@ def source_packet(source):
 
 def evidence_packet(research_result):
     sources = [
-        s
-        for s in research_result.get("sources", [])
-        if s.get("evaluation", {}).get("relevance_score", 0) >= 55
-        and "IRRELEVANT" not in s.get("evaluation", {}).get("categories", [])
+        source
+        for source in research_result.get("sources", [])
+        if source.get("evaluation", {}).get("relevance_score", 0) >= 50
+        and "IRRELEVANT"
+        not in source.get("evaluation", {}).get("categories", [])
     ]
 
     sources = sorted(
         sources,
-        key=lambda s: s["evaluation"]["relevance_score"],
+        key=lambda source: (
+            source["evaluation"].get("job_match_score", 0),
+            source["evaluation"].get("relevance_score", 0),
+        ),
         reverse=True,
     )
 
-    return [source_packet(s) for s in sources[:12]]
-
+    return [source_packet(source) for source in sources[:12]]
 
 # =========================================================
-# EVIDENCE CATEGORY LOCK
+# EVIDENCE CATEGORY LOCK — V8.3
 # =========================================================
 
 CLAIM_TYPES = [
@@ -1291,7 +1628,7 @@ CLAIM_TO_CATEGORY = {
     "COMPETITION": "DIRECT_COMPETITOR",
     "PRICING": "PRICING_EVIDENCE",
     "WTP": "WTP_EVIDENCE",
-    "DISTRIBUTION": "DISTRIBUTION_EVIDENCE",
+    "DISTRIBUTION": "DISTRIBUTION_PROOF",
     "REGULATION": "REGULATORY_EVIDENCE",
     "PLATFORM": "PLATFORM_RISK",
 }
@@ -1308,35 +1645,29 @@ def evidence_source_map(research_result):
 def evidence_ids_by_category(research_result):
     output = {
         "DIRECT_COMPETITOR": [],
+        "ADJACENT_COMPETITOR": [],
         "PRICING_EVIDENCE": [],
+        "PROBLEM_EVIDENCE": [],
         "WTP_EVIDENCE": [],
-        "DISTRIBUTION_EVIDENCE": [],
+        "DISTRIBUTION_SURFACE": [],
+        "DISTRIBUTION_PROOF": [],
         "REGULATORY_EVIDENCE": [],
         "PLATFORM_RISK": [],
     }
 
     for source in research_result.get("sources", []):
-        ev = source.get("evaluation", {})
-        if ev.get("relevance_score", 0) < 60:
-            continue
-        if "IRRELEVANT" in ev.get("categories", []):
-            continue
-
         for category in output:
-            if category in ev.get("categories", []):
-                if category == "REGULATORY_EVIDENCE" and not ev.get(
-                    "authoritative", False
-                ):
-                    continue
+            if source_qualifies_for_category(source, category):
                 output[category].append(source.get("source_id"))
 
     return output
 
 
 def validate_evidence_ids(ids, claim_type, research_result):
-    ids = [str(x) for x in (ids or [])]
+    ids = [str(value) for value in (ids or [])]
     source_map = evidence_source_map(research_result)
     required_category = CLAIM_TO_CATEGORY.get(claim_type)
+
     valid = []
 
     for source_id in ids:
@@ -1344,18 +1675,17 @@ def validate_evidence_ids(ids, claim_type, research_result):
         if not source:
             continue
 
-        ev = source.get("evaluation", {})
-        if ev.get("relevance_score", 0) < 60:
-            continue
-        if "IRRELEVANT" in ev.get("categories", []):
-            continue
-
         if required_category:
-            if required_category not in ev.get("categories", []):
+            if not source_qualifies_for_category(
+                source,
+                required_category,
+            ):
                 continue
+        else:
+            ev = source.get("evaluation", {})
             if (
-                required_category == "REGULATORY_EVIDENCE"
-                and not ev.get("authoritative", False)
+                ev.get("relevance_score", 0) < 60
+                or "IRRELEVANT" in ev.get("categories", [])
             ):
                 continue
 
@@ -1363,6 +1693,55 @@ def validate_evidence_ids(ids, claim_type, research_result):
 
     return valid
 
+
+def claim_can_be_fatal(claim_type, evidence_ids, research_result):
+    # Missing WTP/distribution is an evidence gap, not a fatal proof.
+    if claim_type in ["OTHER", "WTP", "DISTRIBUTION"]:
+        return False
+
+    valid = validate_evidence_ids(
+        evidence_ids,
+        claim_type,
+        research_result,
+    )
+
+    if not valid:
+        return False
+
+    source_map = evidence_source_map(research_result)
+
+    # Competition kill requires exact JTBD.
+    if claim_type == "COMPETITION":
+        return any(
+            source_qualifies_for_category(
+                source_map[source_id],
+                "DIRECT_COMPETITOR",
+            )
+            for source_id in valid
+            if source_id in source_map
+        )
+
+    # Pricing can be fatal only when the price comparison is for the same/substitutable job.
+    if claim_type == "PRICING":
+        return any(
+            source_map[source_id]
+            .get("evaluation", {})
+            .get("same_job_to_be_done", False)
+            and not source_map[source_id]
+            .get("evaluation", {})
+            .get("material_job_difference", False)
+            and source_map[source_id]
+            .get("evaluation", {})
+            .get("job_match_score", 0) >= 75
+            for source_id in valid
+            if source_id in source_map
+        )
+
+    # Regulation and platform risk are already locked to official primary evidence.
+    if claim_type in ["REGULATION", "PLATFORM"]:
+        return True
+
+    return False
 
 # =========================================================
 # KILLER PER-IDEA SCHEMA
@@ -1450,7 +1829,11 @@ def enforce_killer_evidence(idea, research_result, data):
     if data["decision"] == "KILL IT":
         if not (
             data["kill_shot_status"] == "VERIFIED_RISK"
-            and len(data["kill_shot_evidence_ids"]) >= 1
+            and claim_can_be_fatal(
+                data.get("kill_shot_claim_type", "OTHER"),
+                data.get("kill_shot_evidence_ids", []),
+                research_result,
+            )
         ):
             data["decision"] = "INSUFFICIENT EVIDENCE"
 
@@ -1467,17 +1850,21 @@ def run_killer_one(idea, research_result, status):
 هاجم فكرة واحدة فقط.
 
 قواعد Evidence Lock الإلزامية:
-1. VERIFIED_RISK يحتاج Source ID من الفئة الصحيحة:
-   COMPETITION->DIRECT_COMPETITOR, PRICING->PRICING_EVIDENCE,
-   WTP->WTP_EVIDENCE, DISTRIBUTION->DISTRIBUTION_EVIDENCE,
-   REGULATION->REGULATORY_EVIDENCE authoritative, PLATFORM->PLATFORM_RISK.
-2. غياب Distribution/WTP/Pricing = EVIDENCE_GAP وليس VERIFIED_RISK.
-3. لا تستخدم Pricing source لإثبات فشل Distribution.
-4. لا تستخدم Direct Competitor source لإثبات ترخيص تنظيمي.
-5. توقع أن منصة قد تبني الميزة = UNVERIFIED_RISK ما لم يوجد PLATFORM_RISK evidence.
-6. KILL IT فقط إذا Kill Shot = VERIFIED_RISK مع Evidence IDs مطابقة للفئة.
-7. إذا البحث غير كافٍ ولم يوجد Kill Shot موثق: INSUFFICIENT EVIDENCE.
-8. RESEARCH FAILED يعني فشل تقني فعلي فقط.
+1. COMPETITION يحتاج DIRECT_COMPETITOR حقيقي:
+   same_job_to_be_done=true + job_match_score>=80 + relevance>=80.
+   ADJACENT_COMPETITOR لا يكفي لقتل الفكرة.
+2. Pricing يحتاج PRICING_EVIDENCE صريح.
+3. WTP يحتاج WTP_EVIDENCE مع REAL_PAYMENT_SIGNAL.
+   وجود المشكلة أو الالتزام لا يثبت الدفع.
+4. Distribution يحتاج DISTRIBUTION_PROOF.
+   وجود directory/community = DISTRIBUTION_SURFACE فقط ولا يثبت CAC أو adoption.
+5. Regulation يحتاج REGULATORY_EVIDENCE من OFFICIAL_GOVERNMENT.
+6. Platform risk يحتاج PLATFORM_RISK من OFFICIAL_VENDOR وبـjob match قوي.
+7. اختلاف جوهري في المهمة مثل sales tax مقابل contractor income-tax withholding
+   يعني Adjacent وليس Direct.
+8. غياب Pricing/WTP/Distribution = EVIDENCE_GAP وليس VERIFIED_RISK.
+9. KILL IT فقط إذا Kill Shot = VERIFIED_RISK مع Evidence IDs مطابقة فعلاً.
+10. RESEARCH FAILED يعني فشل تقني فعلي فقط.
 """
 
     packet = {
@@ -1492,7 +1879,7 @@ def run_killer_one(idea, research_result, status):
         KILLER_MODEL,
         system,
         json.dumps(packet, ensure_ascii=False),
-        "killer_one_v82",
+        "killer_one_v83",
         KILLER_ONE_SCHEMA,
         1400,
         f"KILLER — {idea['name']}",
@@ -1568,10 +1955,13 @@ def run_rebuttal_one(idea, research_result, killer_data, status):
 
 Evidence Lock:
 - ممنوع إدخال حقيقة سوقية/سعرية/تنظيمية جديدة بلا Source ID مناسب.
-- Pricing claim يحتاج PRICING_EVIDENCE.
-- Distribution claim يحتاج DISTRIBUTION_EVIDENCE.
-- Regulatory claim يحتاج authoritative REGULATORY_EVIDENCE.
+- Competition claim يحتاج DIRECT_COMPETITOR exact-JTBD، وليس Adjacent.
+- Pricing claim يحتاج PRICING_EVIDENCE صريح.
+- WTP claim يحتاج REAL_PAYMENT_SIGNAL.
+- Distribution claim يحتاج DISTRIBUTION_PROOF؛ surface فقط لا يكفي.
+- Regulatory claim يحتاج OFFICIAL_GOVERNMENT.
 - إذا لا يوجد الدليل: UNVERIFIED أو EVIDENCE_GAP.
+- لا تستخدم وجود المشكلة كدليل على willingness-to-pay.
 - disputed_reason تفسير منطقي للأدلة فقط، وليس مكاناً لاختراع facts.
 - DROP أفضل من الدفاع عن عيب قاتل موثق.
 - NEEDS MORE EVIDENCE أفضل من التخمين.
@@ -1590,7 +1980,7 @@ Evidence Lock:
         HUNTER_MODEL,
         system,
         json.dumps(packet, ensure_ascii=False),
-        "hunter_rebuttal_one_v82",
+        "hunter_rebuttal_one_v83",
         REBUTTAL_ONE_SCHEMA,
         850,
         f"HUNTER REBUTTAL — {idea['name']}",
@@ -1650,7 +2040,11 @@ def enforce_final_decision(research_result, data):
     if data["decision"] == "KILL IT":
         if not (
             data["decisive_claim_status"] == "VERIFIED_RISK"
-            and len(data["decisive_evidence_ids"]) >= 1
+            and claim_can_be_fatal(
+                data.get("decisive_claim_type", "OTHER"),
+                data.get("decisive_evidence_ids", []),
+                research_result,
+            )
         ):
             data["decision"] = "INSUFFICIENT EVIDENCE"
 
@@ -1665,7 +2059,11 @@ def run_killer_final_one(idea, research_result, killer_data, rebuttal_data, stat
 
 Evidence Lock:
 - KILL IT يحتاج Decisive Claim = VERIFIED_RISK.
-- Evidence IDs يجب أن تكون من الفئة الصحيحة للـclaim.
+- COMPETITION kill يحتاج DIRECT_COMPETITOR exact-JTBD، وليس Adjacent.
+- WTP يحتاج REAL_PAYMENT_SIGNAL، لا مجرد وجود المشكلة.
+- Distribution kill يحتاج DISTRIBUTION_PROOF، لا مجرد directory/community.
+- Regulation يحتاج OFFICIAL_GOVERNMENT.
+- Platform kill يحتاج official vendor source + strong job match.
 - Missing Distribution/Pricing/WTP = EVIDENCE_GAP وليس Verified Failure.
 - إذا البحث غير كافٍ ولا يوجد عيب قاتل موثق: INSUFFICIENT EVIDENCE.
 - إذا البحث فشل تقنياً: RESEARCH FAILED.
@@ -1687,7 +2085,7 @@ Evidence Lock:
         KILLER_MODEL,
         system,
         json.dumps(packet, ensure_ascii=False),
-        "killer_final_one_v82",
+        "killer_final_one_v83",
         KILLER_FINAL_ONE_SCHEMA,
         950,
         f"KILLER FINAL — {idea['name']}",
@@ -2051,15 +2449,19 @@ def render_gate(gate):
 
 **Gate Score:** {gate["score"]}/{gate["max_score"]}
 
-- 2+ Direct Competitors: {gate["checks"]["2_direct_competitors"]}
-- Pricing Evidence: {gate["checks"]["pricing_evidence"]}
-- WTP Evidence: {gate["checks"]["wtp_evidence"]}
-- Distribution Evidence: {gate["checks"]["distribution_evidence"]}
+- 2+ Exact Direct Competitors: {gate["checks"]["2_exact_direct_competitors"]}
+- Problem Evidence: {gate["checks"]["problem_evidence"]}
+- Explicit Pricing Evidence: {gate["checks"]["pricing_evidence"]}
+- Real WTP Evidence: {gate["checks"]["real_wtp_evidence"]}
+- Distribution Proof: {gate["checks"]["distribution_proof"]}
 - 3+ Relevant Domains: {gate["checks"]["3_relevant_domains"]}
-- Regulatory Evidence if needed: {gate["checks"]["regulatory_evidence_if_needed"]}
+- Official Regulatory Evidence if needed: {gate["checks"]["official_regulatory_evidence_if_needed"]}
+
+**Adjacent competitors:** {", ".join(gate.get("adjacent_competitors", [])) or "None"}
+
+**Distribution surfaces only:** {", ".join(gate.get("distribution_surface_sources", [])) or "None"}
 """
     )
-
 
 # =========================================================
 # REPORT
@@ -2074,7 +2476,7 @@ def build_report(
     objection,
     verdict,
 ):
-    output = ["MD INVESTMENT RESEARCH COUNCIL — V8.2", "\nIDEAS"]
+    output = ["MD INVESTMENT RESEARCH COUNCIL — V8.3", "\nIDEAS"]
 
     for idea in ideas:
         output += [
@@ -2116,6 +2518,14 @@ def build_report(
                 f"URL: {source.get('url','')}",
                 f"Query type: {source.get('query_type','')}",
                 f"Relevance: {source.get('evaluation',{}).get('relevance_score',0)}/100",
+                f"Job Match: {source.get('evaluation',{}).get('job_match_score',0)}/100",
+                f"Same JTBD: {source.get('evaluation',{}).get('same_job_to_be_done',False)}",
+                f"Critical Difference: {source.get('evaluation',{}).get('critical_job_difference','')}",
+                f"Material Difference: {source.get('evaluation',{}).get('material_job_difference',False)}",
+                f"Authority: {source.get('evaluation',{}).get('authority_type','UNKNOWN')}",
+                f"Pricing Explicit: {source.get('evaluation',{}).get('pricing_explicit',False)}",
+                f"WTP Signal: {source.get('evaluation',{}).get('wtp_signal','NONE')}",
+                f"Distribution Signal: {source.get('evaluation',{}).get('distribution_signal','NONE')}",
                 f"Categories: {source.get('evaluation',{}).get('categories',[])}",
                 f"Why relevant: {source.get('evaluation',{}).get('why_relevant','')}",
                 f"Snippet: {source.get('snippet','')}",
@@ -2279,16 +2689,19 @@ st.caption(f"Build: {BUILD_ID}")
 
 st.info(
     """
-**V8.2 — Evidence Lock + Targeted Re-Search**
+**V8.3 — Exact JTBD + Evidence Proof**
 
 الجديد:
-- RESEARCH_FAILED فقط عند فشل تقني فعلي؛ ضعف الأدلة = INSUFFICIENT EVIDENCE.
-- كل claim له نوع: Competition / Pricing / WTP / Distribution / Regulation / Platform.
-- Source ID لا يُقبل إلا إذا كان من فئة الأدلة الصحيحة للـclaim.
-- غياب Pricing/WTP/Distribution = EVIDENCE_GAP وليس VERIFIED_RISK.
-- Hunter Rebuttal ممنوع من اختراع facts جديدة بلا Evidence IDs مناسبة.
-- إعادة بحث مستهدفة حتى 3 جولات، فقط للعناصر الناقصة في Research Gate.
-- KILL IT يحتاج Kill Shot موثقاً بدليل مطابق للفئة.
+- المنافس المباشر يجب أن يطابق نفس Job-to-be-Done فعلياً.
+- ADJACENT_COMPETITOR لا يُستخدم كـ Kill Shot للمنافسة.
+- material_job_difference يمنع تصنيف المصدر كمنافس مباشر.
+- PROBLEM_EVIDENCE منفصل تماماً عن WTP_EVIDENCE.
+- WTP يحتاج Real Payment Signal، وليس مجرد وجود المشكلة أو الالتزام.
+- DISTRIBUTION_SURFACE منفصل عن DISTRIBUTION_PROOF.
+- غياب WTP أو Distribution لا يستطيع قتل الفكرة؛ يبقى Evidence Gap.
+- Pricing Kill يحتاج سعراً صريحاً لحل قابل للاستبدال لنفس المهمة.
+- Regulation يحتاج مصدر حكومي رسمي، وPlatform Risk يحتاج مصدر المنصة الرسمي.
+- Targeted Research يعيد البحث فقط عن الفئات الناقصة.
 """
 )
 
@@ -2531,6 +2944,7 @@ if st.session_state.research:
             for source in result.get("sources", []):
                 ev = source.get("evaluation", {})
                 score = ev.get("relevance_score", 0)
+                job_match = ev.get("job_match_score", 0)
                 categories = ", ".join(ev.get("categories", []))
 
                 st.markdown(
@@ -2538,9 +2952,15 @@ if st.session_state.research:
 **[{source.get("source_id","")}] {source.get("title","")}**
 
 - Relevance: **{score}/100**
-- Categories: `{categories}`
+- Job Match: **{job_match}/100**
 - Same JTBD: `{ev.get("same_job_to_be_done", False)}`
-- Authoritative: `{ev.get("authoritative", False)}`
+- Critical Difference: {ev.get("critical_job_difference","")}
+- Material Difference: `{ev.get("material_job_difference", False)}`
+- Authority: `{ev.get("authority_type", "UNKNOWN")}`
+- Pricing Explicit: `{ev.get("pricing_explicit", False)}`
+- WTP Signal: `{ev.get("wtp_signal", "NONE")}`
+- Distribution Signal: `{ev.get("distribution_signal", "NONE")}`
+- Categories: `{categories}`
 - Why relevant: {ev.get("why_relevant","")}
 - Query type: `{source.get("query_type","")}`
 - URL: {source.get("url","")}
@@ -2701,7 +3121,7 @@ if st.session_state.verdict:
     st.download_button(
         "📝 تحميل التقرير TXT",
         report.encode("utf-8"),
-        "MD_Investment_Research_V8_2.txt",
+        "MD_Investment_Research_V8_3.txt",
         "text/plain",
         use_container_width=True,
     )
@@ -2710,7 +3130,7 @@ if st.session_state.verdict:
         st.download_button(
             "📄 تحميل التقرير PDF",
             create_pdf(report),
-            "MD_Investment_Research_V8_2.pdf",
+            "MD_Investment_Research_V8_3.pdf",
             "application/pdf",
             use_container_width=True,
         )
