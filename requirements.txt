@@ -1,4 +1,4 @@
 streamlit
-openai
+groq
 fpdf2
 uharfbuzz
